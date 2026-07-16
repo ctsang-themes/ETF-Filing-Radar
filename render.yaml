@@ -1,0 +1,24 @@
+# Deploy to Render: https://render.com
+# 1. Push this repo to GitHub
+# 2. New > Web Service > connect repo
+# 3. Render auto-detects this file
+# 4. In the dashboard, add an environment variable:
+#       SEC_USER_AGENT = "Your Name your@email.com"
+# 5. Click Create Web Service
+
+services:
+  - type: web
+    name: etf-filing-radar-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free  # 512MB RAM, sleeps after 15 min idle; first request after sleep wakes in ~30s
+    healthCheckPath: /health
+    envVars:
+      - key: SEC_USER_AGENT
+        sync: false  # paste it in the dashboard, don't commit
+      - key: CACHE_TTL_SECONDS
+        value: "3600"
+      - key: MAX_DOCS_PER_REQUEST
+        value: "60"
+      - key: ALLOW_ORIGINS
+        value: "*"  # restrict to your frontend domain once it's deployed

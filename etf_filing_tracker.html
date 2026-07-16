@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Competitor Launch Radar</title>
+<style>
+  :root {
+    --bg: #0A0C10;
+    --panel: #10131A;
+    --panel-2: #161A24;
+    --border: #232838;
+    --border-hover: #323A50;
+    --text: #E7E9EE;
+    --text-mid: #9BA3B4;
+    --text-dim: #626B80;
+    --issuer: #E0A93B;
+    --issuer-dim: #4A3A1C;
+    --trust: #6E9BD1;
+    --trust-dim: #202D3E;
+    --new: #46C79A;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --sans: 'Inter', -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    margin: 0;
+    padding: 24px;
+    font-size: 13px;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .title-block { display: flex; align-items: baseline; gap: 14px; }
+  .title-block h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin: 0;
+    color: var(--text);
+  }
+  .stat { color: var(--text-dim); font-family: var(--mono); font-size: 12px; }
+  .stat b { color: var(--text-mid); }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type="text"], input[type="date"], select {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-family: var(--sans);
+  }
+  input[type="text"] { width: 220px; }
+  input[type="text"]:focus, select:focus { outline: none; border-color: var(--border-hover); }
+  .legend {
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 14px;
+    font-size: 11.5px;
+    color: var(--text-mid);
+  }
+  .legend b { color: var(--text); }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left;
+    font-size: 10.5px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    font-weight: 500;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    cursor: default;
+  }
+  tbody tr:hover { background: var(--panel); }
+  tbody td { padding: 10px; vertical-align: top; }
+  .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--new); margin-right: 6px; }
+  .status-label { font-size: 10.5px; color: var(--new); font-family: var(--mono); letter-spacing: 0.03em; }
+  .mono { font-family: var(--mono); color: var(--text-mid); font-size: 12px; }
+  .fund-name { font-weight: 500; color: var(--text); font-size: 13px; }
+  .ticker { color: var(--text-dim); font-size: 11px; font-family: var(--mono); }
+  .resolve {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .issuer-name {
+    color: var(--issuer);
+    font-weight: 600;
+    font-size: 12.5px;
+  }
+  .trust-line {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-dim);
+    font-size: 10.5px;
+  }
+  .trust-line .arrow { color: var(--border-hover); }
+  .conf {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 9.5px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-weight: 600;
+    width: fit-content;
+    margin-top: 2px;
+  }
+  .conf-high { background: rgba(70, 200, 150, 0.12); color: #4FC79A; }
+  .conf-alias { background: rgba(224, 169, 59, 0.12); color: var(--issuer); }
+  .conf-low { background: rgba(224, 90, 60, 0.12); color: #E08A6E; }
+  .tag {
+    display: inline-block;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text-mid);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    margin: 2px 4px 2px 0;
+  }
+  .filing-link {
+    color: var(--trust);
+    text-decoration: none;
+    font-size: 11.5px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .filing-link:hover { text-decoration: underline; }
+  tr.expandable-row { cursor: pointer; }
+  .why-row td {
+    background: var(--panel);
+    padding: 0 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .why-inner {
+    display: none;
+    padding: 10px 4px 14px 4px;
+    font-size: 11.5px;
+    color: var(--text-mid);
+    line-height: 1.6;
+    max-width: 640px;
+  }
+  .why-inner.open { display: block; }
+  .why-inner code {
+    font-family: var(--mono);
+    background: var(--panel-2);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text);
+    font-size: 11px;
+  }
+  .toggle-why {
+    color: var(--text-dim);
+    font-size: 10.5px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle-why:hover { color: var(--text-mid); }
+  .empty {
+    padding: 40px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .basis-select {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text-mid);
+    font-size: 10.5px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-family: var(--mono);
+  }
+  .basis-select:focus { outline: none; border-color: var(--border-hover); }
+  .basis-badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    padding: 3px 7px;
+    border-radius: 4px;
+    background: var(--trust-dim);
+    color: var(--trust);
+    white-space: nowrap;
+  }
+  .basis-note {
+    display: block;
+    font-size: 9.5px;
+    color: var(--text-dim);
+    margin-top: 3px;
+  }
+  .eff-date { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .eff-tag {
+    display: block;
+    font-size: 9.5px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-top: 2px;
+  }
+  .eff-tag.confirmed { color: #4FC79A; }
+  .eff-tag.estimated { color: var(--text-dim); }
+  .eff-tag.requested { color: var(--issuer); }
+  .live-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 14px;
+  }
+  .live-bar input[type="text"] { flex: 1; width: auto; }
+  .live-bar button {
+    background: var(--trust-dim);
+    color: var(--trust);
+    border: 1px solid var(--border);
+    padding: 7px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .live-bar button:hover { border-color: var(--border-hover); }
+  .live-bar button:disabled { opacity: 0.5; cursor: default; }
+  .live-status { font-size: 11.5px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; }
+  .live-status.error { color: #E08A6E; }
+  .live-status.ok { color: #4FC79A; }
+  #data-source-tag {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 2px 7px;
+    border-radius: 3px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+
+<div class="live-bar" id="live-bar">
+  <input type="text" id="api-url" placeholder="API URL, e.g. https://etf-filing-radar-api.onrender.com">
+  <button id="fetch-live-btn">Fetch live filings</button>
+  <span id="live-status" class="live-status"></span>
+</div>
+
+<div class="topbar">
+  <div class="title-block">
+    <h1>Competitor launch radar</h1>
+    <span class="stat"><b id="count-visible">12</b> filings &middot; <b id="count-issuers">7</b> issuers resolved</span>
+    <span class="stat" id="data-source-tag">Demo data</span>
+  </div>
+  <div class="controls">
+    <input type="text" id="search" placeholder="Search fund, ticker, issuer...">
+    <select id="issuer-filter">
+      <option value="">All issuers</option>
+    </select>
+    <select id="conf-filter">
+      <option value="">All confidence levels</option>
+      <option value="high">Adviser field match</option>
+      <option value="alias">Alias table match</option>
+      <option value="low">Needs review</option>
+    </select>
+    <select id="date-range-filter">
+      <option value="">All time</option>
+      <option value="30">Last 30 days</option>
+      <option value="90">Last 90 days</option>
+      <option value="180">Last 6 months</option>
+      <option value="365" selected>Last 12 months</option>
+      <option value="custom">Custom range</option>
+    </select>
+    <span id="custom-range-inputs" style="display:none; align-items:center; gap:6px;">
+      <input type="date" id="date-from">
+      <span style="color:var(--text-dim); font-size:11px;">to</span>
+      <input type="date" id="date-to">
+    </span>
+  </div>
+</div>
+
+<div class="legend">
+  <span><span class="swatch" style="background:var(--issuer)"></span><b>Amber</b> = issuer / brand (who actually runs the fund)</span>
+  <span><span class="swatch" style="background:var(--trust)"></span><b>Blue</b> = Trust (the legal filer, often shared across brands)</span>
+  <span>Click a row for the resolution trail</span>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Status</th>
+      <th>Filed</th>
+      <th>Fund</th>
+      <th>Issuer &amp; trust</th>
+      <th>Review track</th>
+      <th>Effective date</th>
+      <th>Tags</th>
+      <th>Filing</th>
+    </tr>
+  </thead>
+  <tbody id="table-body"></tbody>
+</table>
+<div id="empty-state" class="empty" style="display:none;">No filings match your filters.</div>
+
+<script>
+const DEMO_DATA = [
+  {
+    filed: "2026-07-10", status: "Newly filed",
+    fund: "YieldMax NVDA Option Income Strategy ETF", ticker: "NVDY-2",
+    issuer: "YieldMax", trust: "Tidal Trust II",
+    confidence: "high",
+    basis: { type: "485a2-75", days: 75 },
+    resolvedVia: "Investment Adviser field on Form 485BPOS lists <code>ZEGA Financial / YieldMax</code> as adviser; registrant is <code>Tidal Trust II</code>, a shared multi-brand platform.",
+    tags: ["Derivative Income", "Single-Stock"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-07-10", status: "Newly filed",
+    fund: "T-REX 2X Long TSLA Daily Target ETF", ticker: "TSLT-2",
+    issuer: "Tuttle Capital", trust: "Tidal Trust II",
+    confidence: "high",
+    basis: { type: "485a2-75", days: 75 },
+    resolvedVia: "Adviser field lists <code>Tuttle Capital Management</code>. Same registrant (<code>Tidal Trust II</code>) as the YieldMax fund above — this is exactly the collision that breaks trust-name-as-issuer logic.",
+    tags: ["Leveraged", "Single-Stock"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-07-09", status: "Newly filed",
+    fund: "Corgi U.S. Homebuilders ETF", ticker: "CGHB",
+    issuer: "Corgi", trust: "Corgi ETF Trust",
+    confidence: "high",
+    basis: { type: "485a1-60", days: 60 },
+    resolvedVia: "Registrant and adviser both resolve to <code>Corgi</code> — a self-filed trust, so registrant name is reliable here without needing the alias table.",
+    tags: ["Homebuilders"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-07-09", status: "Newly filed",
+    fund: "Corgi Global Infrastructure ETF", ticker: "CGIN",
+    issuer: "Corgi", trust: "Corgi ETF Trust",
+    confidence: "high",
+    basis: { type: "485a1-60", days: 60 },
+    resolvedVia: "Same self-filed trust pattern as above. Filed jointly with the Homebuilders fund as part of the trust’s initial registration statement, so both run the 60-day (a)(1) clock rather than the 75-day amendment clock.",
+    tags: ["Broad Infrastructure"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-07-09", status: "Newly filed",
+    fund: "GraniteShares 2x Long MLPX Daily ETF", ticker: "MLPX2",
+    issuer: "GraniteShares", trust: "GraniteShares ETF Trust",
+    confidence: "high",
+    basis: { type: "485a2-75", days: 75 },
+    resolvedVia: "Self-filed trust; registrant name matches adviser name directly. Facing sheet checkbox: 75 days after filing pursuant to paragraph (a)(2) — this is the same fund shown in your uploaded facing sheet.",
+    tags: ["Broad Infrastructure", "Leveraged"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-07-08", status: "Newly filed",
+    fund: "Defiance Daily Target 2X Long RDDT ETF", ticker: "RDDX",
+    issuer: "Defiance", trust: "Tidal Trust II",
+    confidence: "alias",
+    basis: { type: "485a2-date", designatedDate: "2026-08-22" },
+    resolvedVia: "Registrant is <code>Tidal Trust II</code> — a third shared-trust case alongside the YieldMax and T-REX/Tuttle Capital rows above, not a Defiance-owned trust. Adviser field was blank on the initial N-1A (common on first filings), so issuer was resolved via the alias table pending confirmation from the 485BPOS. Facing sheet checkbox: ‘on (date) pursuant to paragraph (a)(2)’ — a specific accelerated date was requested rather than the standard 75-day clock.",
+    tags: ["Single-Stock", "Leveraged"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-07-08", status: "Newly filed",
+    fund: "Roundhill MAGS Weekly Covered Call ETF", ticker: "MAGC",
+    issuer: "Roundhill", trust: "Roundhill ETF Trust",
+    confidence: "high",
+    basis: { type: "485a2-75", days: 75 },
+    resolvedVia: "Self-filed trust; adviser field confirms.",
+    tags: ["Derivative Income"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-04-23", status: "Effective",
+    fund: "Direxion Daily PLTR Bull 2X Shares", ticker: "PLTU",
+    issuer: "Direxion", trust: "Direxion Shares ETF Trust",
+    confidence: "high",
+    basis: { type: "485b-immediate" },
+    effectiveDate: "2026-07-07",
+    resolvedVia: "Self-filed trust; adviser field confirms. Filed as an immaterial amendment under 485(b), effective immediately on filing rather than running a 75-day clock.",
+    tags: ["Leveraged", "Single-Stock"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-07-07", status: "Newly filed",
+    fund: "YieldMax COIN Option Income Strategy ETF", ticker: "CONY-2",
+    issuer: "YieldMax", trust: "Tidal Trust II",
+    confidence: "high",
+    basis: { type: "485a2-75", days: 75 },
+    resolvedVia: "Adviser field lists <code>ZEGA Financial / YieldMax</code>. Grouping by issuer (not registrant) correctly clusters this with the NVDA fund above instead of scattering it across unrelated Tidal-hosted brands.",
+    tags: ["Derivative Income", "Single-Stock"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-07-06", status: "Newly filed",
+    fund: "Innovator Buffer Innovation ETF - July", ticker: "BJUL",
+    issuer: "Innovator", trust: "Innovator ETFs Trust",
+    confidence: "low",
+    basis: { type: "485a2-date", designatedDate: "2026-08-05" },
+    resolvedVia: "Adviser field parse returned two candidate names (sub-adviser vs adviser both listed). Neither the registrant nor the alias table could break the tie cleanly — needs a manual check before it's grouped.",
+    tags: ["Defined Outcome"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-04-22", status: "Effective",
+    fund: "Guinness Atkinson AI Drug Discovery ETF", ticker: "RXAI",
+    issuer: "Guinness Atkinson", trust: "Guinness Atkinson Asset Management",
+    confidence: "high",
+    basis: { type: "485b-immediate" },
+    effectiveDate: "2026-07-06",
+    resolvedVia: "Adviser field matches registrant directly.",
+    tags: ["Biotech", "Pharmaceuticals"],
+    filingUrl: "#"
+  },
+  {
+    filed: "2026-04-21", status: "Listed",
+    fund: "Yorkville America Reindustrialization Dividend Index ETF", ticker: "USRE",
+    issuer: "Yorkville America", trust: "Listed Funds Trust",
+    confidence: "alias",
+    basis: { type: "485a2-75", days: 75 },
+    effectiveDate: "2026-07-05",
+    resolvedVia: "Registrant is <code>Listed Funds Trust</code>, a large shared platform hosting many unrelated brands. Issuer resolved via adviser field this time (<code>Yorkville America</code>), not the alias table — shown here as a contrast case to the shared-trust rows above.",
+    tags: ["Broad Industrials", "Broad Infrastructure"],
+    filingUrl: "#"
+  }
+];
+
+let DATA = DEMO_DATA;
+
+const tbody = document.getElementById('table-body');
+const searchInput = document.getElementById('search');
+const issuerFilter = document.getElementById('issuer-filter');
+const confFilter = document.getElementById('conf-filter');
+const dateRangeFilter = document.getElementById('date-range-filter');
+const customRangeInputs = document.getElementById('custom-range-inputs');
+const dateFrom = document.getElementById('date-from');
+const dateTo = document.getElementById('date-to');
+const emptyState = document.getElementById('empty-state');
+const countVisible = document.getElementById('count-visible');
+const countIssuers = document.getElementById('count-issuers');
+const apiUrlInput = document.getElementById('api-url');
+const fetchLiveBtn = document.getElementById('fetch-live-btn');
+const liveStatus = document.getElementById('live-status');
+const dataSourceTag = document.getElementById('data-source-tag');
+
+function rebuildIssuerOptions() {
+  const current = issuerFilter.value;
+  issuerFilter.innerHTML = '<option value="">All issuers</option>';
+  const issuers = [...new Set(DATA.map(d => d.issuer).filter(Boolean))].sort();
+  issuers.forEach(i => {
+    const opt = document.createElement('option');
+    opt.value = i; opt.textContent = i;
+    issuerFilter.appendChild(opt);
+  });
+  if (issuers.includes(current)) issuerFilter.value = current;
+}
+rebuildIssuerOptions();
+
+const savedApiUrl = localStorage.getItem('etf-radar-api-url');
+if (savedApiUrl) apiUrlInput.value = savedApiUrl;
+
+async function fetchLive() {
+  const url = apiUrlInput.value.trim().replace(/\/$/, '');
+  if (!url) {
+    liveStatus.textContent = 'Enter an API URL first';
+    liveStatus.className = 'live-status error';
+    return;
+  }
+  localStorage.setItem('etf-radar-api-url', url);
+
+  const rangeVal = dateRangeFilter.value;
+  let start, end;
+  const today = new Date();
+  end = today.toISOString().slice(0, 10);
+  if (rangeVal === 'custom' && dateFrom.value && dateTo.value) {
+    start = dateFrom.value; end = dateTo.value;
+  } else {
+    const days = parseInt(rangeVal, 10) || 365;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    start = startDate.toISOString().slice(0, 10);
+  }
+
+  fetchLiveBtn.disabled = true;
+  liveStatus.textContent = 'Fetching from EDGAR — this can take up to a couple minutes...';
+  liveStatus.className = 'live-status';
+
+  try {
+    const resp = await fetch(`${url}/scrape?start=${start}&end=${end}`);
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`${resp.status}: ${body.slice(0, 200)}`);
+    }
+    const json = await resp.json();
+    DATA = json.filings.map(normalizeLiveRecord);
+    rebuildIssuerOptions();
+    dataSourceTag.textContent = json.from_cache ? 'Live data (cached)' : 'Live data';
+    liveStatus.textContent = `Loaded ${DATA.length} filings (${start} to ${end})`;
+    liveStatus.className = 'live-status ok';
+    render();
+  } catch (err) {
+    liveStatus.textContent = `Fetch failed: ${err.message}`;
+    liveStatus.className = 'live-status error';
+  } finally {
+    fetchLiveBtn.disabled = false;
+  }
+}
+
+function normalizeLiveRecord(r) {
+  // Live API may leave issuer/basis unresolved rather than guess --
+  // give the renderer safe fallbacks instead of crashing on nulls.
+  return {
+    ...r,
+    issuer: r.issuer || 'Unresolved',
+    ticker: r.ticker || '—',
+    confidence: r.confidence || 'low',
+    basis: r.basis && r.basis.type !== 'unresolved' ? r.basis : { type: 'unresolved' },
+    tags: r.tags || [],
+  };
+}
+
+fetchLiveBtn.addEventListener('click', fetchLive);
+
+function confLabel(c) {
+  if (c === 'high') return { cls: 'conf-high', text: 'Adviser match' };
+  if (c === 'alias') return { cls: 'conf-alias', text: 'Alias match' };
+  return { cls: 'conf-low', text: 'Needs review' };
+}
+
+function basisLabel(basis) {
+  const map = {
+    '485b-immediate': { badge: '485(b)', note: 'immediate on filing' },
+    '485b-date': { badge: '485(b)', note: 'designated date' },
+    '485a1-60': { badge: '485(a)(1)', note: '60d — new trust\u2019s first fund' },
+    '485a1-date': { badge: '485(a)(1)', note: 'designated date, accelerated' },
+    '485a2-75': { badge: '485(a)(2)', note: '75d — amendment to existing trust' },
+    '485a2-date': { badge: '485(a)(2)', note: 'designated date, accelerated' },
+    'unresolved': { badge: 'Unresolved', note: 'checkbox not detected — check manually' }
+  };
+  return map[basis.type] || map['unresolved'];
+}
+
+function addDays(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' });
+}
+
+function resolveEffective(d) {
+  if (d.effectiveDate) return { date: d.effectiveDate, tag: 'confirmed' };
+  if (d.basis.type === 'unresolved') return { date: null, tag: 'estimated' };
+  if (d.basis.type.endsWith('-date')) return { date: d.basis.designatedDate, tag: 'requested' };
+  return { date: addDays(d.filed, d.basis.days), tag: 'estimated' };
+}
+
+function render() {
+  const q = searchInput.value.trim().toLowerCase();
+  const issuerVal = issuerFilter.value;
+  const confVal = confFilter.value;
+  const rangeVal = dateRangeFilter.value;
+
+  let rangeStart = null, rangeEnd = null;
+  if (rangeVal && rangeVal !== 'custom') {
+    const today = new Date();
+    rangeEnd = today.toISOString().slice(0, 10);
+    const start = new Date();
+    start.setDate(start.getDate() - parseInt(rangeVal, 10));
+    rangeStart = start.toISOString().slice(0, 10);
+  } else if (rangeVal === 'custom') {
+    rangeStart = dateFrom.value || null;
+    rangeEnd = dateTo.value || null;
+  }
+
+  const filtered = DATA.filter(d => {
+    const matchesQ = !q || (d.fund + d.ticker + d.issuer + d.trust).toLowerCase().includes(q);
+    const matchesIssuer = !issuerVal || d.issuer === issuerVal;
+    const matchesConf = !confVal || d.confidence === confVal;
+    const matchesStart = !rangeStart || d.filed >= rangeStart;
+    const matchesEnd = !rangeEnd || d.filed <= rangeEnd;
+    return matchesQ && matchesIssuer && matchesConf && matchesStart && matchesEnd;
+  });
+
+  tbody.innerHTML = '';
+  filtered.forEach((d, idx) => {
+    const conf = confLabel(d.confidence);
+    const basis = basisLabel(d.basis);
+    const eff = resolveEffective(d);
+
+    const row = document.createElement('tr');
+    row.className = 'expandable-row';
+    row.innerHTML = `
+      <td><span class="status-dot"></span><span class="status-label">${d.status.toUpperCase()}</span></td>
+      <td class="mono">${d.filed}</td>
+      <td>
+        <div class="fund-name">${d.fund}</div>
+        <div class="ticker">${d.ticker}</div>
+      </td>
+      <td>
+        <div class="resolve">
+          <span class="issuer-name">${d.issuer}</span>
+          <span class="trust-line"><span class="arrow">&larr;</span>${d.trust}</span>
+          <span class="conf ${conf.cls}">${conf.text}</span>
+        </div>
+      </td>
+      <td>
+        <span class="basis-badge">${basis.badge}</span>
+        <span class="basis-note">${basis.note}</span>
+      </td>
+      <td>
+        <span class="eff-date">${formatDate(eff.date)}</span>
+        <span class="eff-tag ${eff.tag}">${eff.tag}</span>
+      </td>
+      <td>${d.tags.map(t => `<span class="tag">${t}</span>`).join('')}</td>
+      <td><a class="filing-link" href="${d.filingUrl}" onclick="event.stopPropagation()">FILING &#8599;</a></td>
+    `;
+    const whyRow = document.createElement('tr');
+    whyRow.className = 'why-row';
+    whyRow.innerHTML = `<td colspan="8"><div class="why-inner" id="why-${idx}">${d.resolvedVia}</div></td>`;
+    row.addEventListener('click', () => {
+      const el = whyRow.querySelector('.why-inner');
+      el.classList.toggle('open');
+    });
+    tbody.appendChild(row);
+    tbody.appendChild(whyRow);
+  });
+
+  countVisible.textContent = filtered.length;
+  countIssuers.textContent = new Set(filtered.map(d => d.issuer)).size;
+  emptyState.style.display = filtered.length === 0 ? 'block' : 'none';
+}
+
+searchInput.addEventListener('input', render);
+issuerFilter.addEventListener('change', render);
+confFilter.addEventListener('change', render);
+dateRangeFilter.addEventListener('change', () => {
+  customRangeInputs.style.display = dateRangeFilter.value === 'custom' ? 'inline-flex' : 'none';
+  render();
+});
+dateFrom.addEventListener('change', render);
+dateTo.addEventListener('change', render);
+
+render();
+</script>
+</body>
+</html>
