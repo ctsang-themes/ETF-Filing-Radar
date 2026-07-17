@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -73,14 +73,31 @@ def _build_record(
 
     if basis_type is None:
         basis = {"type": "unresolved", "days": None}
+    elif basis_type == "485b-immediate":
+        # 485(b) is effective immediately on filing -- this is a genuinely
+        # known effective date, so it's the one case we report as confirmed.
+        basis = {"type": basis_type}
+        effective_date = filed
     elif basis_type.endswith("-date"):
-        basis = {"type": basis_type, "designatedDate": designated_date}
-        effective_date = designated_date
+        # An accelerated/designated date the filer *requested*; not yet
+        # confirmed. Pass it through basis and let the frontend tag it
+        # 'requested' -- do NOT set effectiveDate (that means 'confirmed').
+        iso_designated = designated_date
+        if designated_date:
+            try:
+                iso_designated = datetime.strptime(
+                    designated_date, "%B %d, %Y"
+                ).date().isoformat()
+            except ValueError:
+                iso_designated = designated_date  # leave as-is if unparseable
+        basis = {"type": basis_type, "designatedDate": iso_designated}
     else:
-        days = parser.DAYS_BY_BASIS[basis_type]
+        # 485(a) 60/75-day clock: the fund auto-goes-effective on that day
+        # absent SEC action. It's a projection, not a confirmed date, so we
+        # pass the day count and let the frontend compute + tag it 'estimated'
+        # rather than sending it as a confirmed effectiveDate.
+        days = parser.DAYS_BY_BASIS.get(basis_type)
         basis = {"type": basis_type, "days": days}
-        filed_dt = datetime.strptime(filed, "%Y-%m-%d").date()
-        effective_date = (filed_dt + timedelta(days=days)).isoformat()
 
     if resolution.method == "fund_sponsor":
         resolved_via_parts = [
