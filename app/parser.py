@@ -39,7 +39,9 @@ ADVISER_NAME_BEFORE_RE = re.compile(
 ADVISER_REJECT_TERMS = {
     "the adviser", "adviser", "the fund", "the trust", "the board",
     "sub-adviser", "the sub-adviser", "the firm", "firm",
+    "investment manager", "the investment manager", "manager",
 }
+
 ADVISER_REJECT_WORDS = {
     "act", "amended", "officers", "directors", "registered", "under",
     "for", "is", "are", "was", "the", "in", "on", "at", "to", "by", "of",
