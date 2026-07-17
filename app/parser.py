@@ -43,7 +43,7 @@ ADVISER_REJECT_TERMS = {
 ADVISER_REJECT_WORDS = {
     "act", "amended", "officers", "directors", "registered", "under",
     "for", "is", "are", "was", "the", "in", "on", "at", "to", "by", "of",
-    "whereas", "file", "no", "sec",
+    "whereas", "file", "no", "sec", "and", "other", "service", "providers",
 }
 
 ADVISER_LABEL_RE = re.compile(
@@ -249,12 +249,19 @@ def _strip_leading_heading_words(name: str) -> str:
     words = name.split()
     if all(w.strip(",.").isupper() for w in words):
         return name
-    while words and words[0].strip(",.").isupper() and len(words) > 1:
+    while (
+        words
+        and len(words[0].strip(",.")) >= 2
+        and words[0].strip(",.").isupper()
+        and len(words) > 1
+    ):
         words.pop(0)
     return " ".join(words)
 
 
-ADVISER_LABEL_PREFIX_RE = re.compile(r"^(?:investment\s+advisers?|advisers?)\s+", re.IGNORECASE)
+ADVISER_LABEL_PREFIX_RE = re.compile(
+    r"^(?:investment\s+advisers?|advisers?|managers?)\s+", re.IGNORECASE
+)
 
 
 def _strip_leading_adviser_label(name: str) -> str:
