@@ -3,12 +3,6 @@ Extraction logic for the two things that actually trip this project up:
 
 1. Which effective-date box is checked on the Rule 485 facing sheet.
 2. Who the real issuer is, as distinct from the registrant Trust name.
-
-Both are regex/heuristic based against the flattened document text from
-edgar_client.fetch_document_text(). Checkbox rendering on EDGAR is
-inconsistent across filers and years (Unicode ballot boxes, bracketed
-X's, Wingdings-mapped glyphs), so this is deliberately conservative:
-when it can't tell, it returns None / "needs_review" rather than guess.
 """
 
 from __future__ import annotations
@@ -16,10 +10,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-CHECKED_MARKERS = ("\u2612", "[X]", "[x]", "(X)")  # ballot-box-with-x, bracket forms
+CHECKED_MARKERS = ("\u2612", "[X]", "[x]", "(X)")
 
-# The six facing-sheet options, in the order Rule 485 lists them, each
-# with the basis code we report downstream.
 FACING_SHEET_OPTIONS = [
     ("immediately upon filing pursuant to paragraph (b)", "485b-immediate"),
     ("on (date) pursuant to paragraph (b)", "485b-date"),
@@ -35,15 +27,33 @@ EXPLICIT_DATE_RE = re.compile(
     r"([A-Z][a-z]+\s+\d{1,2},\s+\d{4})"
 )
 
-ADVISER_FIELD_RE = re.compile(
-    r"Investment Adviser[s]?\s*[:\-]?\s*([A-Z][A-Za-z0-9&.,'\-\s]{2,80}?)"
-    r"(?=\s*(?:Sub-[Aa]dviser|Distributor|Administrator|Custodian|\.|,\s*(?:LLC|LP|Inc)\b[.,]|$))",
+ADVISER_ANCHOR_RE = re.compile(
+    r"(?:(?:has\s+)?serv(?:e|es|ed|ing)\s+as|acts?\s+as|is|are|was)\s+"
+    r"(?:the\s+)?(?:Fund'?s\s+)?investment adviser",
+    re.IGNORECASE,
+)
+ADVISER_NAME_BEFORE_RE = re.compile(
+    r"([A-Z][A-Za-z0-9&.,'\-]*(?:\s+[A-Z(][A-Za-z0-9&.,'\")\-]*)*)\s*$"
+)
+
+ADVISER_LABEL_RE = re.compile(
+    r"(?:(?i:Investment Adviser[s]?))\s*[:\-]?\s*([A-Z][A-Za-z0-9&.,'\-\s]{2,80}?)"
+    r"(?=\s*(?:Sub-[Aa]dviser|Distributor|Administrator|Custodian|\.|,\s*(?:LLC|LP|Inc)\b[.,]|$))"
+)
+
+# On white-label platforms (Tidal Trust II, etc.), the "Adviser" of record
+# is often just a technical/compliance entity shared across many unrelated
+# brands -- the actual brand name is disclosed separately under a
+# "FUND SPONSOR" heading. Self-advised funds have no such section at all,
+# so trying this first is harmless for them; it simply won't match and
+# falls through to the adviser field. Confirmed against a live filing.
+SPONSOR_SECTION_RE = re.compile(r"FUND SPONSOR", re.IGNORECASE)
+SPONSOR_NAME_RE = re.compile(
+    r"sponsorship agreement with\s+[A-Z][A-Za-z0-9&.,'\-\s]*?"
+    r"\(\s*[\u201c\"]([A-Z][A-Za-z0-9&.,'\-\s]*?)[\u201d\"]\s*\)",
     re.IGNORECASE,
 )
 
-# Known shared, multi-brand trust platforms. When the adviser field can't
-# be found, registrant name alone is NOT trustworthy for these -- fall
-# back to "needs_review" rather than guessing a brand.
 SHARED_TRUST_PLATFORMS = {
     "tidal trust ii",
     "tidal etf trust",
@@ -59,23 +69,19 @@ SHARED_TRUST_PLATFORMS = {
 class FacingSheetResult:
     basis_type: str | None
     designated_date: str | None
-    confidence: str  # "checkbox_detected" | "needs_review"
+    confidence: str
 
 
 @dataclass
 class IssuerResolution:
     issuer: str | None
     trust: str
-    confidence: str  # "high" | "alias" | "low"
+    confidence: str
     method: str
 
 
 def parse_facing_sheet_basis(text: str) -> FacingSheetResult:
-    """Find which of the six Rule 485 checkboxes is marked."""
     window = text
-    # Narrow to the facing sheet region if we can find the anchor phrase --
-    # keeps false positives from prospectus body text mentioning "485(a)"
-    # elsewhere.
     anchor = window.find("proposed public filing")
     if anchor != -1:
         window = window[anchor : anchor + 2000]
@@ -95,21 +101,55 @@ def parse_facing_sheet_basis(text: str) -> FacingSheetResult:
     return FacingSheetResult(None, None, "needs_review")
 
 
-def parse_adviser(text: str) -> str | None:
-    m = ADVISER_FIELD_RE.search(text)
+def _clean_adviser_name(name: str) -> str:
+    return name.strip(" \"'()").rstrip(",")
+
+
+def parse_fund_sponsor(text: str) -> str | None:
+    section = SPONSOR_SECTION_RE.search(text)
+    if not section:
+        return None
+    window = text[section.end() : section.end() + 500]
+    m = SPONSOR_NAME_RE.search(window)
     if not m:
         return None
-    candidate = m.group(1).strip().rstrip(".,")
-    if len(candidate) < 3:
-        return None
-    return candidate
+    candidate = _clean_adviser_name(m.group(1))
+    return candidate if len(candidate) >= 2 else None
 
 
-def resolve_issuer(registrant_name: str, adviser: str | None) -> IssuerResolution:
-    """Never treat registrant/Trust name as issuer by default -- only when
-    the adviser field independently confirms it, or as a flagged fallback
-    on non-shared trusts."""
+def parse_adviser(text: str) -> str | None:
+    anchor = ADVISER_ANCHOR_RE.search(text)
+    if anchor:
+        preceding = text[: anchor.start()].rstrip()
+        last_period = preceding.rfind(". ")
+        window = preceding[last_period + 2 :] if last_period != -1 else preceding
+        m = ADVISER_NAME_BEFORE_RE.search(window)
+        if m:
+            candidate = _clean_adviser_name(m.group(1))
+            if len(candidate) >= 3:
+                return candidate
+
+    m = ADVISER_LABEL_RE.search(text)
+    if m:
+        candidate = _clean_adviser_name(m.group(1))
+        if len(candidate) >= 3:
+            return candidate
+
+    return None
+
+
+def resolve_issuer(
+    registrant_name: str, adviser: str | None, sponsor: str | None = None
+) -> IssuerResolution:
+    """Priority: Fund Sponsor (real brand on white-label platforms) >
+    Adviser field (correct on its own for self-advised trusts) > flagged
+    fallback for known shared-trust platforms with neither."""
     trust = registrant_name
+
+    if sponsor:
+        return IssuerResolution(
+            issuer=sponsor, trust=trust, confidence="high", method="fund_sponsor"
+        )
 
     if adviser:
         return IssuerResolution(
@@ -117,16 +157,10 @@ def resolve_issuer(registrant_name: str, adviser: str | None) -> IssuerResolutio
         )
 
     if trust.strip().lower() in SHARED_TRUST_PLATFORMS:
-        # Can't safely guess a brand for a shared platform with no adviser
-        # field found -- this is exactly the Defiance/Tidal mistake to
-        # avoid repeating.
         return IssuerResolution(
-            issuer=None, trust=trust, confidence="low", method="shared_trust_no_adviser"
+            issuer=None, trust=trust, confidence="low", method="shared_trust_no_signal"
         )
 
-    # Self-filed-looking trust name (e.g. "Example ETF Trust") with no
-    # adviser field found on this pass -- fall back to the registrant
-    # name as a low-confidence guess, clearly flagged, not asserted.
     guessed = trust.replace(" ETF Trust", "").replace(" Trust", "").strip()
     return IssuerResolution(
         issuer=guessed, trust=trust, confidence="alias", method="registrant_name_fallback"
