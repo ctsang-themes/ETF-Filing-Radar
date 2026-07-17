@@ -38,11 +38,8 @@ if not USER_AGENT:
 BASE_HEADERS = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 FULL_INDEX_URL = "https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{q}/form.idx"
 
-# Registration-related forms relevant to a new-or-amended ETF launch.
 ETF_FORMS = ("N-1A", "485APOS", "485BPOS", "485BXT")
 
-# SEC rate limit is 10 req/sec; stay well under it since we're fetching
-# individual documents too.
 _MIN_INTERVAL = 0.15
 _last_request_ts = 0.0
 
@@ -61,7 +58,7 @@ class IndexRow:
     company_name: str
     cik: str
     date_filed: str
-    filename: str  # relative path under Archives/, e.g. edgar/data/.../0000...-index.htm
+    filename: str
 
     @property
     def index_url(self) -> str:
@@ -94,19 +91,54 @@ def fetch_full_index(year: int, quarter: int, client: httpx.Client) -> list[Inde
 
     rows: list[IndexRow] = []
     lines = resp.text.splitlines()
-    started = False
-    for line in lines:
+    header_idx = None
+    dash_idx = None
+    for i, line in enumerate(lines):
         if line.startswith("Form Type"):
-            started = True
+            header_idx = i
+        elif header_idx is not None and line.strip() and set(line.strip()) <= {"-", " "}:
+            dash_idx = i
+            break
+
+    if header_idx is None or dash_idx is None:
+        raise RuntimeError(
+            "Could not find the 'Form Type' header / dashed column-width line "
+            "in form.idx -- SEC may have changed the file format."
+        )
+
+    # The dashed line's groups of consecutive dashes give the exact column
+    # widths, in the same order as the header. This is the reliable way to
+    # slice fixed-width columns -- guessed offsets break silently if SEC
+    # ever shifts a field width by even one character.
+    dash_line = lines[dash_idx]
+    col_bounds = []
+    pos = 0
+    for group in dash_line.split(" "):
+        if group == "":
+            pos += 1
             continue
-        if not started or not line.strip() or line.startswith("---"):
+        start_pos = pos
+        end_pos = pos + len(group)
+        col_bounds.append((start_pos, end_pos))
+        pos = end_pos + 1
+
+    if len(col_bounds) != 5:
+        raise RuntimeError(
+            f"Expected 5 columns in form.idx, found {len(col_bounds)} -- "
+            "format may have changed."
+        )
+
+    (ft_start, ft_end), (cn_start, cn_end), (cik_start, cik_end), \
+        (df_start, df_end), (fn_start, _) = col_bounds
+
+    for line in lines[dash_idx + 1 :]:
+        if not line.strip():
             continue
-        # Fixed-width columns: Form Type, Company Name, CIK, Date Filed, File Name
-        form_type = line[0:12].strip()
-        company_name = line[12:74].strip()
-        cik = line[74:86].strip()
-        date_filed = line[86:98].strip()
-        filename = line[98:].strip()
+        form_type = line[ft_start:ft_end].strip()
+        company_name = line[cn_start:cn_end].strip()
+        cik = line[cik_start:cik_end].strip()
+        date_filed = line[df_start:df_end].strip()
+        filename = line[fn_start:].strip()
         if form_type in ETF_FORMS:
             rows.append(IndexRow(form_type, company_name, cik, date_filed, filename))
     return rows
@@ -131,14 +163,11 @@ def fetch_filing_index_page(index_url: str, client: httpx.Client) -> str:
 
 
 def find_primary_document_url(index_page_html: str, index_url: str) -> str | None:
-    """The index page lists all documents in the filing; grab the main one
-    (usually the largest .htm that isn't the index itself)."""
     hrefs = re.findall(r'href="([^"]+\.htm[l]?)"', index_page_html, re.IGNORECASE)
     base = index_url.rsplit("/", 1)[0]
     candidates = [h for h in hrefs if "index" not in h.lower()]
     if not candidates:
         return None
-    # Prefer the first non-index htm -- EDGAR lists the primary document first.
     doc = candidates[0]
     if doc.startswith("http"):
         return doc
@@ -149,7 +178,6 @@ def fetch_document_text(doc_url: str, client: httpx.Client) -> str:
     _throttle()
     resp = client.get(doc_url, headers=BASE_HEADERS, timeout=30)
     resp.raise_for_status()
-    # Strip tags crudely -- good enough for regex-based field extraction.
     text = re.sub(r"<[^>]+>", " ", resp.text)
     text = re.sub(r"&nbsp;|&#160;", " ", text)
     text = re.sub(r"\s+", " ", text)
