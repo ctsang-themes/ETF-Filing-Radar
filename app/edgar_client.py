@@ -96,49 +96,27 @@ def fetch_full_index(year: int, quarter: int, client: httpx.Client) -> list[Inde
     for i, line in enumerate(lines):
         if line.startswith("Form Type"):
             header_idx = i
-        elif header_idx is not None and line.strip() and set(line.strip()) <= {"-", " "}:
+        elif header_idx is not None and line.strip() and set(line.strip()) <= {"-"}:
             dash_idx = i
             break
 
     if header_idx is None or dash_idx is None:
         raise RuntimeError(
-            "Could not find the 'Form Type' header / dashed column-width line "
+            "Could not find the 'Form Type' header / dashed separator line "
             "in form.idx -- SEC may have changed the file format."
         )
 
-    # The dashed line's groups of consecutive dashes give the exact column
-    # widths, in the same order as the header. This is the reliable way to
-    # slice fixed-width columns -- guessed offsets break silently if SEC
-    # ever shifts a field width by even one character.
-    dash_line = lines[dash_idx]
-    col_bounds = []
-    pos = 0
-    for group in dash_line.split(" "):
-        if group == "":
-            pos += 1
-            continue
-        start_pos = pos
-        end_pos = pos + len(group)
-        col_bounds.append((start_pos, end_pos))
-        pos = end_pos + 1
-
-    if len(col_bounds) != 5:
-        raise RuntimeError(
-            f"Expected 5 columns in form.idx, found {len(col_bounds)} -- "
-            "format may have changed."
-        )
-
-    (ft_start, ft_end), (cn_start, cn_end), (cik_start, cik_end), \
-        (df_start, df_end), (fn_start, _) = col_bounds
-
+    # Fields are separated by runs of 2+ spaces; no field value in this file
+    # ever contains 2+ consecutive spaces itself (form types like "1-A POS"
+    # use a single space, which this correctly leaves intact). Confirmed
+    # against a live sample of the real file rather than assumed.
     for line in lines[dash_idx + 1 :]:
         if not line.strip():
             continue
-        form_type = line[ft_start:ft_end].strip()
-        company_name = line[cn_start:cn_end].strip()
-        cik = line[cik_start:cik_end].strip()
-        date_filed = line[df_start:df_end].strip()
-        filename = line[fn_start:].strip()
+        fields = re.split(r"\s{2,}", line.strip())
+        if len(fields) != 5:
+            continue
+        form_type, company_name, cik, date_filed, filename = fields
         if form_type in ETF_FORMS:
             rows.append(IndexRow(form_type, company_name, cik, date_filed, filename))
     return rows
