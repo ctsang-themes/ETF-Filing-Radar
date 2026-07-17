@@ -332,6 +332,12 @@ FUND_NAME_KNOWN_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 FUND_NAME_LEADING_THE_RE = re.compile(r'^The\s+(?=[A-Z])', re.IGNORECASE)
+# A preceding label ("...Objective of the Fund <NAME>") can leak a leading
+# "Fund" / "the Fund" token into the backward capture. Strip it, but only
+# when a plausible name follows, so a fund actually named "Fund ..." is safe.
+FUND_NAME_LEADING_FUND_LABEL_RE = re.compile(
+    r'^(?:the\s+)?Fund\s+(?=(?:The\s+)?[A-Z])', re.IGNORECASE
+)
 
 
 def _strip_fund_name_headings(name: str) -> str:
@@ -363,8 +369,15 @@ def parse_fund_name(text: str) -> str | None:
     candidate = m.group(1).strip()
     candidate = _strip_fund_name_headings(candidate)
     candidate = _strip_fund_name_boilerplate(candidate)
+    candidate = FUND_NAME_LEADING_FUND_LABEL_RE.sub("", candidate)
     candidate = FUND_NAME_LEADING_THE_RE.sub("", candidate)
     return candidate if len(candidate) >= 3 else None
+
+
+GENERIC_LEADING_WORDS = {
+    "etf", "etfs", "the", "fund", "funds", "trust", "series", "daily",
+    "shares", "index", "us", "u.s.",
+}
 
 
 def brand_from_fund_name(fund_name: str) -> str | None:
@@ -377,7 +390,12 @@ def brand_from_fund_name(fund_name: str) -> str | None:
         if boundary_char == "" or not boundary_char.isalnum():
             return normalize_brand(brand)
     words = fund_name.split()
-    return words[0] if words else None
+    if not words:
+        return None
+    first = words[0].strip(",.").lower()
+    if first in GENERIC_LEADING_WORDS:
+        return None
+    return words[0]
 
 
 def resolve_issuer(
