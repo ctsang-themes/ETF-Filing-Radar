@@ -37,6 +37,7 @@ def health():
 def _build_record(
     row: edgar_client.IndexRow,
     text: str | None,
+    doc_url: str,
 ) -> dict:
     adviser = parser.parse_adviser(text) if text else None
     sponsor = parser.parse_fund_sponsor(text) if text else None
@@ -110,7 +111,7 @@ def _build_record(
         "effectiveDate": effective_date,
         "resolvedVia": " ".join(resolved_via_parts),
         "tags": parser.tag_categories(display_fund_name),
-        "filingUrl": row.index_url,
+        "filingUrl": doc_url,
         "form_type": row.form_type,
         "cik": row.cik,
     }
@@ -125,10 +126,13 @@ async def _scrape(start: date, end: date) -> list[dict]:
                 records = []
                 for row in rows:
                     try:
-                        text = edgar_client.fetch_document_text(row.index_url, client)
+                        raw = edgar_client.fetch_submission(row.index_url, client)
+                        text = edgar_client.clean_submission_text(raw)
+                        doc_url = edgar_client.primary_document_url(row, raw) or row.index_url
                     except Exception:
                         text = None
-                    records.append(_build_record(row, text))
+                        doc_url = row.index_url
+                    records.append(_build_record(row, text, doc_url))
                 return records
 
         return await asyncio.to_thread(_run)
