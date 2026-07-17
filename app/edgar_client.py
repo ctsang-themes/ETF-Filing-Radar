@@ -254,3 +254,101 @@ def clean_submission_text(raw: str) -> str:
 def fetch_document_text(doc_url: str, client: httpx.Client) -> str:
     """Fetch and clean a document in one step (compat wrapper)."""
     return clean_submission_text(fetch_submission(doc_url, client))
+
+
+# --- Structured Series / Class (Contract) data ------------------------------
+#
+# Investment-company filings (485APOS/485BPOS/N-1A) carry a machine-readable
+# block in the SEC header listing each *series* (i.e. each fund) by name, with
+# its Series ID and per-class ticker(s). This is far more reliable than
+# regexing the prospectus prose for '(the "Fund")', and it naturally yields one
+# entry per fund -- so a multi-series trust filing expands into the right rows
+# instead of collapsing onto the registrant/Trust name.
+#
+# Layout (SGML, values on the same line, no leaf close tags):
+#   <SERIES-AND-CLASSES-CONTRACTS-DATA>
+#     <NEW-SERIES-AND-CLASSES-CONTRACTS> | <EXISTING-...> | <MERGER-...>
+#       <SERIES>
+#         <SERIES-ID>S000...
+#         <SERIES-NAME>Some Fund Name
+#         <CLASS-CONTRACT>
+#           <CLASS-CONTRACT-TICKER-SYMBOL>ABCD
+#         </CLASS-CONTRACT>
+#       </SERIES>
+
+_SUBSECTION_RE = re.compile(
+    r"<(NEW|EXISTING|MERGER)-SERIES-AND-CLASSES-CONTRACTS>(?P<body>.*?)"
+    r"</\1-SERIES-AND-CLASSES-CONTRACTS>",
+    re.IGNORECASE | re.DOTALL,
+)
+_SERIES_BLOCK_RE = re.compile(r"<SERIES>(?P<body>.*?)</SERIES>", re.IGNORECASE | re.DOTALL)
+_SERIES_NAME_RE = re.compile(r"<SERIES-NAME>\s*([^\r\n<]+)", re.IGNORECASE)
+_SERIES_ID_RE = re.compile(r"<SERIES-ID>\s*([^\r\n<]+)", re.IGNORECASE)
+_TICKER_RE = re.compile(r"<CLASS-CONTRACT-TICKER-SYMBOL>\s*([^\r\n<]+)", re.IGNORECASE)
+
+
+@dataclass
+class SeriesInfo:
+    series_id: str | None
+    name: str
+    tickers: list[str]
+    status: str  # "new" | "existing" | "merger" | "unknown"
+
+
+def _parse_series_blocks(body: str, status: str) -> list[SeriesInfo]:
+    out: list[SeriesInfo] = []
+    for m in _SERIES_BLOCK_RE.finditer(body):
+        block = m.group("body")
+        name_m = _SERIES_NAME_RE.search(block)
+        if not name_m:
+            continue
+        name = name_m.group(1).strip()
+        if not name:
+            continue
+        sid_m = _SERIES_ID_RE.search(block)
+        tickers = []
+        for t in _TICKER_RE.findall(block):
+            t = t.strip()
+            # ticker is often blank/placeholder at the 485APOS stage
+            if t and t.lower() not in {"n/a", "none"}:
+                tickers.append(t)
+        out.append(
+            SeriesInfo(
+                series_id=sid_m.group(1).strip() if sid_m else None,
+                name=name,
+                tickers=tickers,
+                status=status,
+            )
+        )
+    return out
+
+
+def parse_series_classes(raw_submission: str) -> list[SeriesInfo]:
+    """Extract every fund (series) declared in the submission's SGML header.
+
+    Preference order for the 'status' tag is derived from which subsection the
+    series sits in. When the filing uses the subsection wrappers, series are
+    tagged new/existing/merger accordingly; otherwise they're tagged 'unknown'.
+    Deduplicates by series_id (falling back to name) since some filings repeat
+    a series across sections.
+    """
+    results: list[SeriesInfo] = []
+    matched_any_subsection = False
+    for sm in _SUBSECTION_RE.finditer(raw_submission):
+        matched_any_subsection = True
+        status = sm.group(1).lower()
+        results.extend(_parse_series_blocks(sm.group("body"), status))
+
+    if not matched_any_subsection:
+        # No subsection wrappers -- parse any bare <SERIES> blocks in the file.
+        results.extend(_parse_series_blocks(raw_submission, "unknown"))
+
+    seen: set[str] = set()
+    deduped: list[SeriesInfo] = []
+    for s in results:
+        key = (s.series_id or s.name).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(s)
+    return deduped

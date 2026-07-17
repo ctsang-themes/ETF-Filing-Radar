@@ -38,16 +38,32 @@ def _build_record(
     row: edgar_client.IndexRow,
     text: str | None,
     doc_url: str,
+    series: "edgar_client.SeriesInfo | None" = None,
 ) -> dict:
     adviser = parser.parse_adviser(text) if text else None
     sponsor = parser.parse_fund_sponsor(text) if text else None
-    resolution = parser.resolve_issuer(row.company_name, adviser, sponsor, row.company_name)
+
+    # Fund identity comes from the structured Series/Class header when present
+    # (exact name + ticker), otherwise from the prose '(the "Fund")' convention,
+    # otherwise the registrant/Trust name as a last resort.
+    if series is not None:
+        display_fund_name = series.name
+        ticker = series.tickers[0] if series.tickers else None
+        fund_name_for_resolution = series.name
+        fund_name_source = "series_header"
+    else:
+        extracted_fund_name = parser.parse_fund_name(text) if text else None
+        display_fund_name = extracted_fund_name or row.company_name
+        ticker = None
+        fund_name_for_resolution = row.company_name
+        fund_name_source = "prose" if extracted_fund_name else "registrant_fallback"
+
+    resolution = parser.resolve_issuer(
+        row.company_name, adviser, sponsor, fund_name_for_resolution
+    )
     facing = parser.parse_facing_sheet_basis(text) if text else parser.FacingSheetResult(
         None, None, "needs_review"
     )
-
-    extracted_fund_name = parser.parse_fund_name(text) if text else None
-    display_fund_name = extracted_fund_name or row.company_name
 
     filed = row.date_filed
     basis_type = facing.basis_type
@@ -92,18 +108,30 @@ def _build_record(
             "from the registrant name -- treat as low-confidence."
         ]
     resolved_via_parts.append(f"Facing sheet basis: {basis_confidence}.")
-    if not extracted_fund_name:
+    if fund_name_source == "series_header":
+        status_note = {
+            "new": "newly registered series in this filing",
+            "existing": "existing series being amended",
+            "merger": "series involved in a merger",
+        }.get(series.status, "series listed in this filing")
         resolved_via_parts.append(
-            "Fund name not found in document text via the standard "
-            '\'(the "Fund")\' convention -- showing the registrant/Trust '
-            "name instead of the specific fund."
+            f"Fund name/ticker taken from the filing's structured Series/Class "
+            f"header ({status_note})."
+        )
+    elif fund_name_source == "registrant_fallback":
+        resolved_via_parts.append(
+            "No structured Series/Class header and no "
+            '\'(the "Fund")\' match in the document text -- showing the '
+            "registrant/Trust name instead of the specific fund."
         )
 
     return {
         "filed": filed,
         "status": "Newly filed",
         "fund": display_fund_name,
-        "ticker": None,
+        "ticker": ticker,
+        "seriesId": series.series_id if series is not None else None,
+        "seriesStatus": series.status if series is not None else None,
         "issuer": resolution.issuer,
         "trust": resolution.trust,
         "confidence": resolution.confidence,
@@ -115,6 +143,18 @@ def _build_record(
         "form_type": row.form_type,
         "cik": row.cik,
     }
+
+
+def _build_records(
+    row: edgar_client.IndexRow,
+    text: str | None,
+    doc_url: str,
+    series_list: "list[edgar_client.SeriesInfo]",
+) -> list[dict]:
+    """One record per fund when the structured header lists series; else one."""
+    if series_list:
+        return [_build_record(row, text, doc_url, s) for s in series_list]
+    return [_build_record(row, text, doc_url, None)]
 
 
 async def _scrape(start: date, end: date) -> list[dict]:
@@ -129,10 +169,12 @@ async def _scrape(start: date, end: date) -> list[dict]:
                         raw = edgar_client.fetch_submission(row.index_url, client)
                         text = edgar_client.clean_submission_text(raw)
                         doc_url = edgar_client.primary_document_url(row, raw) or row.index_url
+                        series_list = edgar_client.parse_series_classes(raw)
                     except Exception:
                         text = None
                         doc_url = row.index_url
-                    records.append(_build_record(row, text, doc_url))
+                        series_list = []
+                    records.extend(_build_records(row, text, doc_url, series_list))
                 return records
 
         return await asyncio.to_thread(_run)
