@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterable
 
+import html
+
 import httpx
 
 USER_AGENT = os.environ.get("SEC_USER_AGENT", "")
@@ -181,6 +183,6 @@ def fetch_document_text(doc_url: str, client: httpx.Client) -> str:
     raw = CHECKBOX_TAG_RE.sub(_checkbox_to_bracket, raw)
 
     text = re.sub(r"<[^>]+>", " ", raw)
-    text = re.sub(r"&nbsp;|&#160;", " ", text)
+    text = html.unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text
