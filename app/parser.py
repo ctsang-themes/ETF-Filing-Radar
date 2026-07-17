@@ -3,6 +3,12 @@ Extraction logic for the two things that actually trip this project up:
 
 1. Which effective-date box is checked on the Rule 485 facing sheet.
 2. Who the real issuer is, as distinct from the registrant Trust name.
+
+Both are regex/heuristic based against the flattened document text from
+edgar_client.fetch_document_text(). Checkbox rendering on EDGAR is
+inconsistent across filers and years (Unicode ballot boxes, bracketed
+X's, Wingdings-mapped glyphs), so this is deliberately conservative:
+when it can't tell, it returns None / "needs_review" rather than guess.
 """
 
 from __future__ import annotations
@@ -10,8 +16,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-CHECKED_MARKERS = ("\u2612", "[X]", "[x]", "(X)")
+CHECKED_MARKERS = ("\u2612", "[X]", "[x]", "(X)")  # ballot-box-with-x, bracket forms
 
+# The six facing-sheet options, in the order Rule 485 lists them, each
+# with the basis code we report downstream.
 FACING_SHEET_OPTIONS = [
     ("immediately upon filing pursuant to paragraph (b)", "485b-immediate"),
     ("on (date) pursuant to paragraph (b)", "485b-date"),
@@ -27,26 +35,53 @@ EXPLICIT_DATE_RE = re.compile(
     r"([A-Z][a-z]+\s+\d{1,2},\s+\d{4})"
 )
 
+# Real prospectus text states the adviser name BEFORE the phrase
+# ("Tidal Investments LLC serves as investment adviser to the Fund"),
+# not as a "Label: Value" field the way a form would. Confirmed against
+# live EDGAR filings rather than assumed.
 ADVISER_ANCHOR_RE = re.compile(
     r"(?:(?:has\s+)?serv(?:e|es|ed|ing)\s+as|acts?\s+as|is|are|was)\s+"
     r"(?:the\s+)?(?:Fund'?s\s+)?investment adviser",
     re.IGNORECASE,
 )
+# Bounded to at most 5 words total -- real adviser names are essentially
+# never longer than this, and bounding it stops the capture from
+# swallowing an unrelated section heading that abuts the sentence once
+# the document is flattened to a single line.
 ADVISER_NAME_BEFORE_RE = re.compile(
     r"([A-Z][A-Za-z0-9&.,'\-]*(?:\s+[A-Z(][A-Za-z0-9&.,'\")\-]*){0,4})\s*$"
 )
 
+# A document often defines "ABC LLC (the 'Adviser')" once, then refers to
+# it as just "The Adviser" everywhere after -- if the FIRST occurrence of
+# the anchor phrase happens to be one of those backreferences rather than
+# the original naming sentence, these catch it so we can move on to the
+# next occurrence instead of returning the placeholder as if it were a
+# real name.
 ADVISER_REJECT_TERMS = {
     "the adviser", "adviser", "the fund", "the trust", "the board",
     "sub-adviser", "the sub-adviser",
 }
 ADVISER_REJECT_WORDS = {"act", "amended", "officers", "directors", "registered", "under"}
 
+# Fallback for the rarer "Investment Adviser: Name" labeled-field style.
+# Only the label itself is case-insensitive -- the captured name must
+# start with a real capital letter, or lowercase boilerplate prose gets
+# mistaken for a company name.
 ADVISER_LABEL_RE = re.compile(
     r"(?:(?i:Investment Adviser[s]?))\s*[:\-]?\s*([A-Z][A-Za-z0-9&.,'\-\s]{2,80}?)"
     r"(?=\s*(?:Sub-[Aa]dviser|Distributor|Administrator|Custodian|\.|,\s*(?:LLC|LP|Inc)\b[.,]|$))"
 )
 
+# On white-label platforms (Tidal Trust II, etc.), the "Adviser" of record
+# is often just a technical/compliance entity (e.g. "Tidal Investments
+# LLC") shared across many unrelated brands -- the actual brand name is
+# disclosed separately under a "FUND SPONSOR" heading. Self-advised funds
+# (GraniteShares, Direxion, etc.) have no such section at all, since
+# there's no separate sponsor to disclose -- so trying this first is
+# harmless for them; it simply won't match and falls through to the
+# adviser field below. Confirmed against a live filing with this exact
+# structure.
 SPONSOR_SECTION_RE = re.compile(r"FUND SPONSOR", re.IGNORECASE)
 SPONSOR_NAME_RE = re.compile(
     r"sponsorship agreement with\s+[A-Z][A-Za-z0-9&.,'\-\s]*?"
@@ -54,6 +89,9 @@ SPONSOR_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Known shared, multi-brand trust platforms. When the adviser field can't
+# be found, registrant name alone is NOT trustworthy for these -- fall
+# back to "needs_review" rather than guessing a brand.
 SHARED_TRUST_PLATFORMS = {
     "tidal trust ii",
     "tidal etf trust",
@@ -64,24 +102,166 @@ SHARED_TRUST_PLATFORMS = {
     "exchange traded concepts trust",
 }
 
+# Entities that exist purely to provide back-office/compliance services on
+# white-label trust platforms -- they never have their own branded, end-
+# customer-facing products. Finding one of these as "the adviser" is a
+# signal that the real brand lives elsewhere (Fund Sponsor section, or
+# the fund's own name), not that we've found the issuer.
+KNOWN_SHELL_ADVISERS = {
+    "tidal investments llc",
+    "toroso investments",
+    "vident investment advisory",
+    "exchange traded concepts, llc",
+    "exchange traded concepts llc",
+    "zega financial",
+}
+
+# Known issuer brands, sourced from the ETF.com league table. Sorted
+# longest-first so multi-word brands ("Leverage Shares") are checked
+# before a shorter overlapping guess would otherwise fire on an
+# unrelated generic suffix word ("Shares") elsewhere. Inherently
+# incomplete -- extend as new issuers or product lines come up.
+KNOWN_ISSUER_BRANDS = sorted(
+    [
+    "Rockefeller Capital Management", "Summit Global Investments",
+    "New York Life Investments", "Portfolio Building Block",
+    "Measured Risk Portfolios", "Opus Capital Management", "Faith Investor Services",
+    "Sound Income Strategies", "Segall Bryant & Hamill", "Little Harbor Advisors",
+    "Baillie Gifford Funds", "Parnassus Investments", "CrossingBridge Funds",
+    "Point Bridge Capital", "Intelligent Investor", "The Brinsmere Funds",
+    "US Benchmark Series", "Armada ETF Advisors", "Russell Investments",
+    "Deutsche X-trackers", "McElhenny Sheffield", "Alternative Access",
+    "Variant Perception", "Franklin Templeton", "Relative Sentiment",
+    "SoundWatch Capital", "Tweedy, Browne Co.", "US Commodity Funds",
+    "Symmetry Panoramic", "Ned Davis Research", "Guinness Atkinson",
+    "AllianceBernstein", "Carbon Collective", "Performance Trust", "Donoghue Forlines",
+    "Clockwise Capital", "Volatility Shares", "Core Alternative", "Discipline Funds",
+    "Federated Hermes", "Fidelity Advisor", "Hotchkis & Wiley", "BrandywineGLOBAL",
+    "American Century", "REX Microsectors", "Sarmaya Partners", "Neuberger Berman",
+    "CoreValues Alpha", "Horizon Kinetics", "Wilmington Funds", "Sterling Capital",
+    "First Manhattan", "EA Series Trust", "Alpha Architect", "The Future Fund",
+    "American Beacon", "Harrison Street", "Strategy Shares", "Hypatia Capital",
+    "Leverage Shares", "Janus Henderson", "AXS Investments", "Applied Finance",
+    "Shelton Capital", "Morgan Dempsey", "Prospera Funds", "Tactical Funds",
+    "Worth Charting", "Return Stacked", "Tuttle Capital", "Genter Capital",
+    "Acquirers Fund", "Myriad Capital", "Northern Trust", "Cohen & Steers",
+    "Rareview Funds", "Climate Global", "Morgan Stanley", "Overlay Shares",
+    "Brown Advisory", "Northern Funds", "Conductor Fund", "The Nightview",
+    "Raymond James", "Texas Capital", "Mairs & Power", "Pacific Funds",
+    "Mason Capital", "USCF Advisers", "T. Rowe Price", "Opportunistic",
+    "Capital Group", "Palmer Square", "Impact Shares", "ActivePassive",
+    "VictoryShares", "Cambiar Funds", "Bahl & Gaynor", "GraniteShares",
+    "AdvisorShares", "Goldman Sachs", "Golden Eagle", "LeaderShares", "GQG Partners",
+    "Diamond Hill", "Counterpoint", "Cyber Hornet", "Archer Funds", "SanJac Alpha",
+    "Transamerica", "RAFI Indices", "John Hancock", "Billionaires", "Essential 40",
+    "State Street", "Brendan Wood", "FCF Advisors", "Truth Social", "North Square",
+    "Goose Hollow", "TimesSquare", "KraneShares", "Arrow Funds", "First Eagle",
+    "Eaton Vance", "Sovereign's", "North Shore", "Income STKd", "Liberty One",
+    "Motley Fool", "Stone Ridge", "ROBO Global", "VistaShares", "Leatherback",
+    "ArrowShares", "Free Market", "Dimensional", "First Trust", "Renaissance",
+    "Asset Class", "Convergence", "WealthTrust", "FolioBeyond", "SonicShares",
+    "ClearShares", "ClearBridge", "Mohr Funds", "CoinShares", "Chesapeake",
+    "Invesco DB", "Indexperts", "Parametric", "Fitzgerald", "Ocean Park", "Formidable",
+    "FlexShares", "TrueShares", "RiverFront", "StockSnips", "Subversive", "Main Funds",
+    "DoubleLine", "Brookstone", "BufferLABS", "BNY Mellon", "Reverb ETF", "WBI Shares",
+    "RiverNorth", "Vegashares", "Pathfinder", "REX-Osprey", "WisdomTree", "Touchstone",
+    "REX Shares", "Guggenheim", "Tidal ETFs", "Distillate", "Kensington", "MarketDesk",
+    "Angel Oak", "Xtrackers", "Crossmark", "Quadratic", "Sparkline", "CastleArk",
+    "Unlimited", "Arimathea", "Even Herd", "Bridgeway", "Thornburg", "SMI Funds",
+    "Arlington", "Yorkville", "Fundstrat", "Bluemonte", "SmartETFs", "Honeytree",
+    "Concourse", "ADRhedged", "Oak Funds", "Castellan", "BondBloxx", "Fundsmith",
+    "Roundhill", "AMG Funds", "Innovator", "ProShares", "Day Hagan", "M.D. Sass",
+    "Euclidean", "NestYield", "Kingsbarn", "TappAlpha", "Oneascent", "Altshares",
+    "Grayscale", "WHITEWOLF", "Strategas", "Allspring", "Rainwater", "BlackRock",
+    "US Global", "Macquarie", "TradersAI", "Principal", "Breakwave", "Templeton",
+    "Tremblant", "Congress", "Moonvest", "Tortoise", "Ritholtz", "Franklin",
+    "Simplify", "21Shares", "Defiance", "PlanRock", "Vontobel", "Fairlead", "Nicholas",
+    "Columbia", "Teucrium", "Direxion", "Pinnacle", "Matthews", "AB Funds", "Adaptive",
+    "Eventide", "YieldMax", "Reckoner", "Suncoast", "Fidelity", "CresAlta", "Leuthold",
+    "Aberdeen", "Hennessy", "Global X", "JPMorgan", "InfraCap", "Longview", "Twin Oak",
+    "ChinaAMC", "SP Funds", "Defender", "Absolute", "Milliman", "Panagram", "Thrivent",
+    "Westwood", "Barclays", "Hartford", "Bancreek", "Meridian", "Optimize", "X-Square",
+    "Peerless", "Affinity", "Rayliant", "Horizons", "aberdeen", "NovaTide", "Vanguard",
+    "Frontier", "Cultivar", "ERShares", "Hedgeye", "Humilis", "Natixis", "Allianz",
+    "Founder", "Calvert", "Coastal", "Anfield", "Anydrus", "Freedom", "BeeHive",
+    "Keating", "Emerald", "Horizon", "Fortuna", "Bushido", "Avantis", "Wedbush",
+    "Onefund", "Inspire", "Hashdex", "Brandes", "Procure", "Invesco", "Bastion",
+    "Astoria", "Amplius", "Adaptiv", "Adasina", "Equable", "Alerian", "Amplify",
+    "iShares", "Altrius", "Academy", "Monarch", "Grizzle", "Ballast", "Gadsden",
+    "Timothy", "Bitwise", "Stacked", "Madison", "Sapient", "Calamos", "Man GLG",
+    "Cambria", "Oakmark", "Gabelli", "FT Vest", "Bridges", "Acuitas", "Beyond",
+    "Hilton", "ETRACS", "Wisdom", "Manzil", "Harbor", "Gotham", "Canary", "Pabrai",
+    "WarCap", "Praxis", "Pictet", "Advent", "Clough", "Jensen", "Alexis", "Skylar",
+    "Nelson", "Virtus", "Schwab", "Lazard", "Sophus", "Nuveen", "Burney", "Strive",
+    "Warren", "Pareto", "Cullen", "Sprott", "Osprey", "Miller", "Cabana", "River1",
+    "Abacus", "CORE16", "Nomura", "VanEck", "Kovitz", "Aztlan", "Themes", "Langar",
+    "Tuttle", "Putnam", "Argent", "Dakota", "Vident", "Select", "Matrix", "Scharf",
+    "iPath", "Oasis", "Alger", "LOGIQ", "Polen", "QRAFT", "India", "Armor", "Davis",
+    "Draco", "Alpha", "Zacks", "3Edge", "Build", "Baron", "Ionic", "Aptus", "PIMCO",
+    "Range", "Pzena", "Towle", "Amana", "Logan", "Eagle", "JLens", "Impax", "Tradr",
+    "COtwo", "FundX", "T-Rex", "Regan", "abrdn", "Mango", "Spear", "Wahed", "Smart",
+    "Weitz", "Atlas", "Pacer", "Toews", "xETFs", "Corgi", "Swan", "Akre", "iMGP",
+    "FINQ", "ALPS", "Dana", "ATAC", "USCF", "Neos", "FMQQ", "Tema", "Avos", "PGIM",
+    "NETL", "THOR", "MKAM", "Vert", "EMQQ", "Voya", "OPAL", "Obra", "Guru", "SPDR",
+    "SoFi", "Alki", "RPAR", "Aura", "Arin", "MRBL", "CoRe", "Hoya", "ETFB", "MUFG",
+    "Saba", "Kurv", "Peak", "Hull", "PLUS", "WEBs", "ZEGA", "DAC", "IDX", "F/m", "L&G",
+    "RAM", "ETC", "UVA", "NPF", "ARS", "Max", "Elm", "HCM", "CLS", "CCM", "AAM", "GSR",
+    "DFA", "ACV", "DWS", "MFS", "GMO", "SEI", "SWP", "UBS", "AGF", "STF", "TCW", "ARK",
+    "Man", "PMV", "REX", "GGM", "DGA", "BBH", "SRH", "AOT", "ROC", "Ruk", "FPA", "CRM",
+    "LSV", "OTG", "Q3", "DB", "PL", "iM", "FM", "MC",
+    ],
+    key=len,
+    reverse=True,
+)
+
+# Some firms operate under multiple names in filings/marketing that are
+# really the same economic issuer -- normalize these to one canonical
+# name so they group together instead of splintering into look-alike
+# rows. Extend this as more such relationships come up.
+BRAND_ALIASES = {
+    "ft vest": "First Trust",
+    "rex shares": "REX Shares",
+    "rex microsectors": "REX Shares",
+    "rex-osprey": "REX Shares",
+    "rex": "REX Shares",
+    "tuttle": "Tuttle Capital",
+    "tuttle capital": "Tuttle Capital",
+    "aberdeen": "abrdn",
+    "us commodity funds": "USCF Advisers",
+    "uscf": "USCF Advisers",
+    "uscf advisers": "USCF Advisers",
+    "franklin": "Franklin Templeton",
+    "franklin templeton": "Franklin Templeton",
+    "fidelity": "Fidelity",
+    "fidelity advisor": "Fidelity",
+}
+
+
+def normalize_brand(name: str) -> str:
+    return BRAND_ALIASES.get(name.strip().lower(), name)
+
 
 @dataclass
 class FacingSheetResult:
     basis_type: str | None
     designated_date: str | None
-    confidence: str
+    confidence: str  # "checkbox_detected" | "needs_review"
 
 
 @dataclass
 class IssuerResolution:
     issuer: str | None
     trust: str
-    confidence: str
+    confidence: str  # "high" | "alias" | "low"
     method: str
 
 
 def parse_facing_sheet_basis(text: str) -> FacingSheetResult:
+    """Find which of the six Rule 485 checkboxes is marked."""
     window = text
+    # Narrow to the facing sheet region if we can find the anchor phrase --
+    # keeps false positives from prospectus body text mentioning "485(a)"
+    # elsewhere.
     anchor = window.find("proposed public filing")
     if anchor != -1:
         window = window[anchor : anchor + 2000]
@@ -119,6 +299,10 @@ def parse_fund_sponsor(text: str) -> str | None:
 
 def _strip_leading_heading_words(name: str) -> str:
     words = name.split()
+    # A legitimate all-caps abbreviation name (e.g. "SSGA FM") has every
+    # word uppercase -- only strip leading uppercase words when there are
+    # also mixed-case words later, which signals a swallowed heading
+    # rather than a real all-caps name.
     if all(w.strip(",.").isupper() for w in words):
         return name
     while words and words[0].strip(",.").isupper() and len(words) > 1:
@@ -149,6 +333,7 @@ def parse_adviser(text: str) -> str | None:
         if len(candidate) >= 3 and _is_valid_adviser_candidate(candidate):
             return candidate
 
+    # Fall back to the less common "Investment Adviser: Name" style.
     m = ADVISER_LABEL_RE.search(text)
     if m:
         candidate = _clean_adviser_name(m.group(1))
@@ -158,26 +343,69 @@ def parse_adviser(text: str) -> str | None:
     return None
 
 
+def brand_from_fund_name(fund_name: str) -> str | None:
+    """Fund names almost always lead with the brand ('YieldMax NVDA...',
+    'Defiance Daily Target...'), but some real brands are themselves
+    two words where the second word ('Shares') is also a common generic
+    suffix elsewhere ('Direxion Daily PLTR Bull 2X Shares') -- a naive
+    first-word split can't tell these apart. Check known multi-word
+    brands as a prefix match first (longest first), and only fall back
+    to the crude first-word guess for brands not yet in the list. This
+    list is inherently incomplete -- extend it as new issuers come up."""
+    for brand in KNOWN_ISSUER_BRANDS:
+        if fund_name.lower().startswith(brand.lower()):
+            return normalize_brand(brand)
+    words = fund_name.split()
+    return words[0] if words else None
+
+
 def resolve_issuer(
-    registrant_name: str, adviser: str | None, sponsor: str | None = None
+    registrant_name: str,
+    adviser: str | None,
+    sponsor: str | None = None,
+    fund_name: str | None = None,
 ) -> IssuerResolution:
+    """Never treat registrant/Trust name as issuer by default. Priority:
+    1. Fund Sponsor -- the real brand on white-label platforms, where the
+       Adviser of record is often just a shared technical entity.
+    2. Adviser field -- but ONLY if it isn't a known shell/back-office
+       entity, since those never have their own branded products.
+    3. Fund-name brand heuristic -- a guess, not a document fact, so
+       lower confidence than the two above.
+    4. Flagged fallback for known shared-trust platforms with nothing.
+    """
     trust = registrant_name
 
     if sponsor:
         return IssuerResolution(
-            issuer=sponsor, trust=trust, confidence="high", method="fund_sponsor"
+            issuer=normalize_brand(sponsor), trust=trust, confidence="high",
+            method="fund_sponsor",
         )
 
-    if adviser:
+    if adviser and adviser.strip().lower() not in KNOWN_SHELL_ADVISERS:
         return IssuerResolution(
-            issuer=adviser, trust=trust, confidence="high", method="adviser_field"
+            issuer=normalize_brand(adviser), trust=trust, confidence="high",
+            method="adviser_field",
         )
+
+    if fund_name:
+        guessed = brand_from_fund_name(fund_name)
+        if guessed:
+            return IssuerResolution(
+                issuer=guessed, trust=trust, confidence="alias", method="fund_name_heuristic"
+            )
 
     if trust.strip().lower() in SHARED_TRUST_PLATFORMS:
+        # Can't safely guess a brand for a shared platform with nothing
+        # to go on -- this is exactly the Defiance/Tidal mistake to avoid
+        # repeating.
         return IssuerResolution(
             issuer=None, trust=trust, confidence="low", method="shared_trust_no_signal"
         )
 
+    # Self-filed-looking trust name with neither signal found -- fall
+    # back to the registrant name as a low-confidence guess, clearly
+    # flagged, not asserted.
     guessed = trust.replace(" ETF Trust", "").replace(" Trust", "").strip()
     return IssuerResolution(
         issuer=guessed, trust=trust, confidence="alias", method="registrant_name_fallback"
