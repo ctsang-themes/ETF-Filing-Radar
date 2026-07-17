@@ -62,7 +62,7 @@ class IndexRow:
 
     @property
     def index_url(self) -> str:
-        return f"https://www.sec.gov/{self.filename}"
+        return f"https://www.sec.gov/Archives/{self.filename}"
 
 
 def _quarter_for(d: date) -> tuple[int, int]:
@@ -106,10 +106,6 @@ def fetch_full_index(year: int, quarter: int, client: httpx.Client) -> list[Inde
             "in form.idx -- SEC may have changed the file format."
         )
 
-    # Fields are separated by runs of 2+ spaces; no field value in this file
-    # ever contains 2+ consecutive spaces itself (form types like "1-A POS"
-    # use a single space, which this correctly leaves intact). Confirmed
-    # against a live sample of the real file rather than assumed.
     for line in lines[dash_idx + 1 :]:
         if not line.strip():
             continue
