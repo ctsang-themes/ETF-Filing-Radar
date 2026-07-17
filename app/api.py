@@ -1,9 +1,5 @@
 """
 FastAPI service: GET /scrape?start=YYYY-MM-DD&end=YYYY-MM-DD
-
-Pulls real ETF registration filings from EDGAR for the date range,
-resolves issuer vs. trust per filing, detects the Rule 485 effective-date
-basis, and returns JSON in the shape the tracker frontend expects.
 """
 
 from __future__ import annotations
@@ -38,13 +34,19 @@ def health():
     return {"ok": True, "user_agent_configured": bool(os.environ.get("SEC_USER_AGENT"))}
 
 
-def _build_record(row: edgar_client.IndexRow, text: str | None) -> dict:
+def _build_record(
+    row: edgar_client.IndexRow,
+    text: str | None,
+) -> dict:
     adviser = parser.parse_adviser(text) if text else None
     sponsor = parser.parse_fund_sponsor(text) if text else None
     resolution = parser.resolve_issuer(row.company_name, adviser, sponsor, row.company_name)
     facing = parser.parse_facing_sheet_basis(text) if text else parser.FacingSheetResult(
         None, None, "needs_review"
     )
+
+    extracted_fund_name = parser.parse_fund_name(text) if text else None
+    display_fund_name = extracted_fund_name or row.company_name
 
     filed = row.date_filed
     basis_type = facing.basis_type
@@ -89,11 +91,17 @@ def _build_record(row: edgar_client.IndexRow, text: str | None) -> dict:
             "from the registrant name -- treat as low-confidence."
         ]
     resolved_via_parts.append(f"Facing sheet basis: {basis_confidence}.")
+    if not extracted_fund_name:
+        resolved_via_parts.append(
+            "Fund name not found in document text via the standard "
+            '\'(the "Fund")\' convention -- showing the registrant/Trust '
+            "name instead of the specific fund."
+        )
 
     return {
         "filed": filed,
         "status": "Newly filed",
-        "fund": row.company_name,
+        "fund": display_fund_name,
         "ticker": None,
         "issuer": resolution.issuer,
         "trust": resolution.trust,
@@ -101,7 +109,7 @@ def _build_record(row: edgar_client.IndexRow, text: str | None) -> dict:
         "basis": basis,
         "effectiveDate": effective_date,
         "resolvedVia": " ".join(resolved_via_parts),
-        "tags": parser.tag_categories(row.company_name),
+        "tags": parser.tag_categories(display_fund_name),
         "filingUrl": row.index_url,
         "form_type": row.form_type,
         "cik": row.cik,
