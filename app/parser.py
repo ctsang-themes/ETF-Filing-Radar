@@ -33,7 +33,14 @@ ADVISER_ANCHOR_RE = re.compile(
     re.IGNORECASE,
 )
 ADVISER_NAME_BEFORE_RE = re.compile(
-    r"([A-Z][A-Za-z0-9&.,'\-]*(?:\s+[A-Z(][A-Za-z0-9&.,'\")\-]*){0,4})\s*$"
+    r"([A-Z][A-Za-z0-9&.,'\-]*(?:\s+[A-Z(\u201c\u2018][A-Za-z0-9&.,'\"\u201c\u201d\u2018\u2019)\-]*){0,4})\s*$"
+)
+# A name is often immediately followed by its own defined-term
+# parenthetical ("GraniteShares LLC (the "Adviser")") -- strip that
+# annotation entirely rather than just cleaning up stray punctuation
+# left over from it.
+TRAILING_DEFINED_TERM_RE = re.compile(
+    r'\s*\(the\s*[\u201c"][^)]*[\u201d"]\)\s*$', re.IGNORECASE
 )
 
 ADVISER_REJECT_TERMS = {
@@ -293,7 +300,8 @@ def parse_adviser(text: str) -> str | None:
         m = ADVISER_NAME_BEFORE_RE.search(window)
         if not m:
             continue
-        candidate = _clean_adviser_name(m.group(1))
+        candidate = TRAILING_DEFINED_TERM_RE.sub("", m.group(1))
+        candidate = _clean_adviser_name(candidate)
         candidate = _strip_leading_heading_words(candidate)
         candidate = _strip_leading_adviser_label(candidate)
         if len(candidate) >= 3 and _is_valid_adviser_candidate(candidate):
@@ -311,7 +319,7 @@ def parse_adviser(text: str) -> str | None:
 
 FUND_NAME_ANCHOR_RE = re.compile(r'\(the\s*[\u201c"]Fund[\u201d"]\)')
 FUND_NAME_BEFORE_RE = re.compile(
-    r'([A-Z][A-Za-z0-9&.,\'\-]*(?:\s+[A-Z0-9(][A-Za-z0-9&.,\'")\-]*){0,7})\s*$'
+    r'([A-Z][A-Za-z0-9&.,\'\-]*(?:\s+[A-Z0-9(\u201c\u2018][A-Za-z0-9&.,\'"\u201c\u201d\u2018\u2019)\-]*){0,7})\s*$'
 )
 FUND_NAME_BOILERPLATE_PREFIX_RE = re.compile(
     r"^(?:this\s+prospectus\s+describes(?:\s+the)?|this\s+summary\s+describes(?:\s+the)?|"
