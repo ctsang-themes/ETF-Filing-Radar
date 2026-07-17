@@ -33,20 +33,20 @@ ADVISER_ANCHOR_RE = re.compile(
     re.IGNORECASE,
 )
 ADVISER_NAME_BEFORE_RE = re.compile(
-    r"([A-Z][A-Za-z0-9&.,'\-]*(?:\s+[A-Z(][A-Za-z0-9&.,'\")\-]*)*)\s*$"
+    r"([A-Z][A-Za-z0-9&.,'\-]*(?:\s+[A-Z(][A-Za-z0-9&.,'\")\-]*){0,4})\s*$"
 )
+
+ADVISER_REJECT_TERMS = {
+    "the adviser", "adviser", "the fund", "the trust", "the board",
+    "sub-adviser", "the sub-adviser",
+}
+ADVISER_REJECT_WORDS = {"act", "amended", "officers", "directors", "registered", "under"}
 
 ADVISER_LABEL_RE = re.compile(
     r"(?:(?i:Investment Adviser[s]?))\s*[:\-]?\s*([A-Z][A-Za-z0-9&.,'\-\s]{2,80}?)"
     r"(?=\s*(?:Sub-[Aa]dviser|Distributor|Administrator|Custodian|\.|,\s*(?:LLC|LP|Inc)\b[.,]|$))"
 )
 
-# On white-label platforms (Tidal Trust II, etc.), the "Adviser" of record
-# is often just a technical/compliance entity shared across many unrelated
-# brands -- the actual brand name is disclosed separately under a
-# "FUND SPONSOR" heading. Self-advised funds have no such section at all,
-# so trying this first is harmless for them; it simply won't match and
-# falls through to the adviser field. Confirmed against a live filing.
 SPONSOR_SECTION_RE = re.compile(r"FUND SPONSOR", re.IGNORECASE)
 SPONSOR_NAME_RE = re.compile(
     r"sponsorship agreement with\s+[A-Z][A-Za-z0-9&.,'\-\s]*?"
@@ -117,17 +117,37 @@ def parse_fund_sponsor(text: str) -> str | None:
     return candidate if len(candidate) >= 2 else None
 
 
+def _strip_leading_heading_words(name: str) -> str:
+    words = name.split()
+    if all(w.strip(",.").isupper() for w in words):
+        return name
+    while words and words[0].strip(",.").isupper() and len(words) > 1:
+        words.pop(0)
+    return " ".join(words)
+
+
+def _is_valid_adviser_candidate(name: str) -> bool:
+    lower = name.lower()
+    if lower in ADVISER_REJECT_TERMS:
+        return False
+    words = set(re.findall(r"[a-z]+", lower))
+    if words & ADVISER_REJECT_WORDS:
+        return False
+    return True
+
+
 def parse_adviser(text: str) -> str | None:
-    anchor = ADVISER_ANCHOR_RE.search(text)
-    if anchor:
+    for anchor in ADVISER_ANCHOR_RE.finditer(text):
         preceding = text[: anchor.start()].rstrip()
         last_period = preceding.rfind(". ")
         window = preceding[last_period + 2 :] if last_period != -1 else preceding
         m = ADVISER_NAME_BEFORE_RE.search(window)
-        if m:
-            candidate = _clean_adviser_name(m.group(1))
-            if len(candidate) >= 3:
-                return candidate
+        if not m:
+            continue
+        candidate = _clean_adviser_name(m.group(1))
+        candidate = _strip_leading_heading_words(candidate)
+        if len(candidate) >= 3 and _is_valid_adviser_candidate(candidate):
+            return candidate
 
     m = ADVISER_LABEL_RE.search(text)
     if m:
@@ -141,9 +161,6 @@ def parse_adviser(text: str) -> str | None:
 def resolve_issuer(
     registrant_name: str, adviser: str | None, sponsor: str | None = None
 ) -> IssuerResolution:
-    """Priority: Fund Sponsor (real brand on white-label platforms) >
-    Adviser field (correct on its own for self-advised trusts) > flagged
-    fallback for known shared-trust platforms with neither."""
     trust = registrant_name
 
     if sponsor:
