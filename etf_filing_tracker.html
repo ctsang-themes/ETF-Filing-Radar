@@ -186,6 +186,29 @@
     color: var(--text-dim);
     font-size: 13px;
   }
+  .group-header td {
+    background: var(--panel-2);
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-hover);
+    border-top: 1px solid var(--border-hover);
+  }
+  .group-header-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .group-issuer-name {
+    color: var(--issuer);
+    font-weight: 700;
+    font-size: 12.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .group-count {
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
   .basis-select {
     background: var(--panel-2);
     border: 1px solid var(--border);
@@ -293,6 +316,10 @@
       <option value="180">Last 6 months</option>
       <option value="365" selected>Last 12 months</option>
       <option value="custom">Custom range</option>
+    </select>
+    <select id="group-by">
+      <option value="none">No grouping</option>
+      <option value="issuer">Group by issuer</option>
     </select>
     <span id="custom-range-inputs" style="display:none; align-items:center; gap:6px;">
       <input type="date" id="date-from">
@@ -459,6 +486,7 @@ const searchInput = document.getElementById('search');
 const issuerFilter = document.getElementById('issuer-filter');
 const confFilter = document.getElementById('conf-filter');
 const dateRangeFilter = document.getElementById('date-range-filter');
+const groupBySelect = document.getElementById('group-by');
 const customRangeInputs = document.getElementById('custom-range-inputs');
 const dateFrom = document.getElementById('date-from');
 const dateTo = document.getElementById('date-to');
@@ -586,11 +614,54 @@ function resolveEffective(d) {
   return { date: addDays(d.filed, d.basis.days), tag: 'estimated' };
 }
 
+function buildRowHtml(d, idx) {
+  const conf = confLabel(d.confidence);
+  const basis = basisLabel(d.basis);
+  const eff = resolveEffective(d);
+  const hasTicker = d.ticker && d.ticker !== '—';
+
+  const row = document.createElement('tr');
+  row.className = 'expandable-row';
+  row.innerHTML = `
+    <td><span class="status-dot"></span><span class="status-label">${d.status.toUpperCase()}</span></td>
+    <td class="mono">${d.filed}</td>
+    <td>
+      <div class="fund-name">${d.fund}</div>
+      ${hasTicker ? `<div class="ticker">${d.ticker}</div>` : ''}
+    </td>
+    <td>
+      <div class="resolve">
+        <span class="issuer-name">${d.issuer}</span>
+        <span class="trust-line"><span class="arrow">&larr;</span>${d.trust}</span>
+        <span class="conf ${conf.cls}">${conf.text}</span>
+      </div>
+    </td>
+    <td>
+      <span class="basis-badge">${basis.badge}</span>
+      <span class="basis-note">${basis.note}</span>
+    </td>
+    <td>
+      <span class="eff-date">${formatDate(eff.date)}</span>
+      <span class="eff-tag ${eff.tag}">${eff.tag}</span>
+    </td>
+    <td>${d.tags.map(t => `<span class="tag">${t}</span>`).join('')}</td>
+    <td><a class="filing-link" href="${d.filingUrl}" onclick="event.stopPropagation()">FILING &#8599;</a></td>
+  `;
+  const whyRow = document.createElement('tr');
+  whyRow.className = 'why-row';
+  whyRow.innerHTML = `<td colspan="8"><div class="why-inner" id="why-${idx}">${d.resolvedVia}</div></td>`;
+  row.addEventListener('click', () => {
+    whyRow.querySelector('.why-inner').classList.toggle('open');
+  });
+  return [row, whyRow];
+}
+
 function render() {
   const q = searchInput.value.trim().toLowerCase();
   const issuerVal = issuerFilter.value;
   const confVal = confFilter.value;
   const rangeVal = dateRangeFilter.value;
+  const groupBy = groupBySelect.value;
 
   let rangeStart = null, rangeEnd = null;
   if (rangeVal && rangeVal !== 'custom') {
@@ -604,7 +675,7 @@ function render() {
     rangeEnd = dateTo.value || null;
   }
 
-  const filtered = DATA.filter(d => {
+  let filtered = DATA.filter(d => {
     const matchesQ = !q || (d.fund + d.ticker + d.issuer + d.trust).toLowerCase().includes(q);
     const matchesIssuer = !issuerVal || d.issuer === issuerVal;
     const matchesConf = !confVal || d.confidence === confVal;
@@ -613,49 +684,49 @@ function render() {
     return matchesQ && matchesIssuer && matchesConf && matchesStart && matchesEnd;
   });
 
-  tbody.innerHTML = '';
-  filtered.forEach((d, idx) => {
-    const conf = confLabel(d.confidence);
-    const basis = basisLabel(d.basis);
-    const eff = resolveEffective(d);
+  // Most-recent-first within any grouping -- EDGAR discovery order isn't
+  // chronological, so this always needs to be applied explicitly.
+  filtered = [...filtered].sort((a, b) => b.filed.localeCompare(a.filed));
 
-    const row = document.createElement('tr');
-    row.className = 'expandable-row';
-    row.innerHTML = `
-      <td><span class="status-dot"></span><span class="status-label">${d.status.toUpperCase()}</span></td>
-      <td class="mono">${d.filed}</td>
-      <td>
-        <div class="fund-name">${d.fund}</div>
-        <div class="ticker">${d.ticker}</div>
-      </td>
-      <td>
-        <div class="resolve">
-          <span class="issuer-name">${d.issuer}</span>
-          <span class="trust-line"><span class="arrow">&larr;</span>${d.trust}</span>
-          <span class="conf ${conf.cls}">${conf.text}</span>
-        </div>
-      </td>
-      <td>
-        <span class="basis-badge">${basis.badge}</span>
-        <span class="basis-note">${basis.note}</span>
-      </td>
-      <td>
-        <span class="eff-date">${formatDate(eff.date)}</span>
-        <span class="eff-tag ${eff.tag}">${eff.tag}</span>
-      </td>
-      <td>${d.tags.map(t => `<span class="tag">${t}</span>`).join('')}</td>
-      <td><a class="filing-link" href="${d.filingUrl}" onclick="event.stopPropagation()">FILING &#8599;</a></td>
-    `;
-    const whyRow = document.createElement('tr');
-    whyRow.className = 'why-row';
-    whyRow.innerHTML = `<td colspan="8"><div class="why-inner" id="why-${idx}">${d.resolvedVia}</div></td>`;
-    row.addEventListener('click', () => {
-      const el = whyRow.querySelector('.why-inner');
-      el.classList.toggle('open');
+  tbody.innerHTML = '';
+
+  if (groupBy === 'issuer') {
+    const groups = new Map();
+    for (const d of filtered) {
+      const key = d.issuer || 'Unresolved';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(d);
+    }
+    // Most-active issuer first -- the point of separating issuer from
+    // trust is exactly to see this ranking correctly.
+    const sortedGroups = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+
+    let idx = 0;
+    for (const [issuerName, rows] of sortedGroups) {
+      const headerRow = document.createElement('tr');
+      headerRow.className = 'group-header';
+      headerRow.innerHTML = `
+        <td colspan="8">
+          <div class="group-header-content">
+            <span class="group-issuer-name">${issuerName}</span>
+            <span class="group-count">${rows.length} filing${rows.length === 1 ? '' : 's'}</span>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(headerRow);
+      for (const d of rows) {
+        const [row, whyRow] = buildRowHtml(d, idx++);
+        tbody.appendChild(row);
+        tbody.appendChild(whyRow);
+      }
+    }
+  } else {
+    filtered.forEach((d, idx) => {
+      const [row, whyRow] = buildRowHtml(d, idx);
+      tbody.appendChild(row);
+      tbody.appendChild(whyRow);
     });
-    tbody.appendChild(row);
-    tbody.appendChild(whyRow);
-  });
+  }
 
   countVisible.textContent = filtered.length;
   countIssuers.textContent = new Set(filtered.map(d => d.issuer)).size;
@@ -665,6 +736,7 @@ function render() {
 searchInput.addEventListener('input', render);
 issuerFilter.addEventListener('change', render);
 confFilter.addEventListener('change', render);
+groupBySelect.addEventListener('change', render);
 dateRangeFilter.addEventListener('change', () => {
   customRangeInputs.style.display = dateRangeFilter.value === 'custom' ? 'inline-flex' : 'none';
   render();
