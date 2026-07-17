@@ -41,7 +41,6 @@ ADVISER_REJECT_TERMS = {
     "sub-adviser", "the sub-adviser", "the firm", "firm",
     "investment manager", "the investment manager", "manager",
 }
-
 ADVISER_REJECT_WORDS = {
     "act", "amended", "officers", "directors", "registered", "under",
     "for", "is", "are", "was", "the", "in", "on", "at", "to", "by", "of",
@@ -308,6 +307,53 @@ def parse_adviser(text: str) -> str | None:
             return candidate
 
     return None
+
+
+FUND_NAME_ANCHOR_RE = re.compile(r'\(the\s*[\u201c"]Fund[\u201d"]\)')
+FUND_NAME_BEFORE_RE = re.compile(
+    r'([A-Z][A-Za-z0-9&.,\'\-]*(?:\s+[A-Z0-9(][A-Za-z0-9&.,\'")\-]*){0,7})\s*$'
+)
+FUND_NAME_BOILERPLATE_PREFIX_RE = re.compile(
+    r"^(?:this\s+prospectus\s+describes(?:\s+the)?|this\s+summary\s+describes(?:\s+the)?|"
+    r"as\s+more\s+fully\s+described\s+in(?:\s+the)?|the\s+following\s+describes(?:\s+the)?)\s+",
+    re.IGNORECASE,
+)
+FUND_NAME_KNOWN_HEADING_RE = re.compile(
+    r'^(?:FUND SUMMARY\.?|PROSPECTUS SUMMARY\.?|SUMMARY\.?|PROSPECTUS\.?)\s+',
+    re.IGNORECASE,
+)
+
+
+def _strip_fund_name_headings(name: str) -> str:
+    while True:
+        stripped = FUND_NAME_KNOWN_HEADING_RE.sub("", name)
+        if stripped == name:
+            return name
+        name = stripped
+
+
+def _strip_fund_name_boilerplate(name: str) -> str:
+    while True:
+        stripped = FUND_NAME_BOILERPLATE_PREFIX_RE.sub("", name)
+        if stripped == name:
+            return name
+        name = stripped
+
+
+def parse_fund_name(text: str) -> str | None:
+    anchor = FUND_NAME_ANCHOR_RE.search(text)
+    if not anchor:
+        return None
+    preceding = text[: anchor.start()].rstrip()
+    last_period = preceding.rfind(". ")
+    window = preceding[last_period + 2 :] if last_period != -1 else preceding
+    m = FUND_NAME_BEFORE_RE.search(window)
+    if not m:
+        return None
+    candidate = m.group(1).strip()
+    candidate = _strip_fund_name_headings(candidate)
+    candidate = _strip_fund_name_boilerplate(candidate)
+    return candidate if len(candidate) >= 3 else None
 
 
 def brand_from_fund_name(fund_name: str) -> str | None:
