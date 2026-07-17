@@ -4,11 +4,6 @@ FastAPI service: GET /scrape?start=YYYY-MM-DD&end=YYYY-MM-DD
 Pulls real ETF registration filings from EDGAR for the date range,
 resolves issuer vs. trust per filing, detects the Rule 485 effective-date
 basis, and returns JSON in the shape the tracker frontend expects.
-
-This cannot be exercised against live sec.gov from the Claude sandbox
-that wrote it -- outbound network here is limited to package registries,
-not sec.gov. It needs to run somewhere with open internet (Render,
-Railway, Fly.io, your own machine) to actually hit EDGAR.
 """
 
 from __future__ import annotations
@@ -43,10 +38,7 @@ def health():
     return {"ok": True, "user_agent_configured": bool(os.environ.get("SEC_USER_AGENT"))}
 
 
-def _build_record(
-    row: edgar_client.IndexRow,
-    text: str | None,
-) -> dict:
+def _build_record(row: edgar_client.IndexRow, text: str | None) -> dict:
     adviser = parser.parse_adviser(text) if text else None
     resolution = parser.resolve_issuer(row.company_name, adviser)
     facing = parser.parse_facing_sheet_basis(text) if text else parser.FacingSheetResult(
@@ -60,9 +52,6 @@ def _build_record(
     basis_confidence = facing.confidence
 
     if basis_type is None:
-        # Couldn't detect the checkbox -- most common default is (a)(2)
-        # 75-day for an amendment to an existing trust, but don't assert
-        # it; leave basis unresolved and flag for manual check.
         basis = {"type": "unresolved", "days": None}
     elif basis_type.endswith("-date"):
         basis = {"type": basis_type, "designatedDate": designated_date}
@@ -87,7 +76,7 @@ def _build_record(
         "filed": filed,
         "status": "Newly filed",
         "fund": row.company_name,
-        "ticker": None,  # not reliably present on the facing sheet; needs a separate pass
+        "ticker": None,
         "issuer": resolution.issuer,
         "trust": resolution.trust,
         "confidence": resolution.confidence,
@@ -103,8 +92,6 @@ def _build_record(
 
 async def _scrape(start: date, end: date) -> list[dict]:
     async with httpx.AsyncClient(follow_redirects=True) as client_async:
-        # httpx sync client used inside edgar_client for simplicity; wrap
-        # blocking calls in a thread so the event loop stays responsive.
         def _run():
             with httpx.Client(follow_redirects=True) as client:
                 rows = edgar_client.discover_filings(start, end, client)
@@ -112,11 +99,11 @@ async def _scrape(start: date, end: date) -> list[dict]:
                 records = []
                 for row in rows:
                     try:
-                        index_html = edgar_client.fetch_filing_index_page(row.index_url, client)
-                        doc_url = edgar_client.find_primary_document_url(index_html, row.index_url)
-                        text = (
-                            edgar_client.fetch_document_text(doc_url, client) if doc_url else None
-                        )
+                        # row.index_url points straight at the complete raw
+                        # submission (.txt) -- it's the whole filing already,
+                        # not a webpage with links to click through to find
+                        # "the real document." Read it directly.
+                        text = edgar_client.fetch_document_text(row.index_url, client)
                     except Exception:
                         text = None
                     records.append(_build_record(row, text))
