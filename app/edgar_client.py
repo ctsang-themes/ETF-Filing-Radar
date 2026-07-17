@@ -169,12 +169,75 @@ def find_primary_document_url(index_page_html: str, index_url: str) -> str | Non
 
 CHECKBOX_TAG_RE = re.compile(r'<input\b[^>]*type=["\']?checkbox["\']?[^>]*>', re.IGNORECASE)
 
+# SGML document blocks in a full-submission .txt. Each real document is
+# wrapped in <DOCUMENT>...<TYPE>FORM<SEQUENCE>N<FILENAME>name.htm...
+_SUBMISSION_DOC_RE = re.compile(
+    r"<DOCUMENT>\s*"
+    r"<TYPE>(?P<type>[^\s<]+).*?"
+    r"<FILENAME>(?P<filename>[^\s<]+)",
+    re.IGNORECASE | re.DOTALL,
+)
+# Accession number embedded in the submission filename path, e.g.
+# edgar/data/1976322/0001829126-26-007646.txt
+_ACCESSION_RE = re.compile(r"(\d{10}-\d{2}-\d{6})\.txt$")
 
-def fetch_document_text(doc_url: str, client: httpx.Client) -> str:
+
+def fetch_submission(url: str, client: httpx.Client) -> str:
+    """Fetch a raw full-submission .txt (or primary doc) without cleaning."""
     _throttle()
-    resp = client.get(doc_url, headers=BASE_HEADERS, timeout=30)
+    resp = client.get(url, headers=BASE_HEADERS, timeout=30)
     resp.raise_for_status()
-    raw = resp.text
+    return resp.text
+
+
+def primary_document_url(row: "IndexRow", raw_submission: str) -> str | None:
+    """Derive the URL of the human-readable primary document.
+
+    Given the full-submission .txt (which lists each contained document with
+    its <TYPE> and <FILENAME>), pick the primary prospectus document and build
+    the canonical Archives URL:
+
+        https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{filename}
+    """
+    m_acc = _ACCESSION_RE.search(row.filename)
+    if not m_acc:
+        return None
+    accession_nodash = m_acc.group(1).replace("-", "")
+
+    blocks = [
+        (m.group("type").upper(), m.group("filename").strip())
+        for m in _SUBMISSION_DOC_RE.finditer(raw_submission)
+    ]
+    if not blocks:
+        return None
+
+    def _is_html(fn: str) -> bool:
+        return fn.lower().endswith((".htm", ".html"))
+
+    # Prefer the document whose TYPE matches the filing's form type and is HTML;
+    # then any HTML document; then the first document of any kind.
+    chosen = None
+    for dtype, fn in blocks:
+        if dtype == row.form_type.upper() and _is_html(fn):
+            chosen = fn
+            break
+    if chosen is None:
+        for _dtype, fn in blocks:
+            if _is_html(fn):
+                chosen = fn
+                break
+    if chosen is None:
+        chosen = blocks[0][1]
+
+    cik = row.cik.lstrip("0") or row.cik
+    return (
+        f"https://www.sec.gov/Archives/edgar/data/{cik}/"
+        f"{accession_nodash}/{chosen}"
+    )
+
+
+def clean_submission_text(raw: str) -> str:
+    """Strip a raw submission/document down to searchable plain text."""
 
     def _checkbox_to_bracket(m: "re.Match") -> str:
         is_checked = bool(re.search(r"\bchecked\b", m.group(0), re.IGNORECASE))
@@ -186,3 +249,8 @@ def fetch_document_text(doc_url: str, client: httpx.Client) -> str:
     text = html.unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text
+
+
+def fetch_document_text(doc_url: str, client: httpx.Client) -> str:
+    """Fetch and clean a document in one step (compat wrapper)."""
+    return clean_submission_text(fetch_submission(doc_url, client))
