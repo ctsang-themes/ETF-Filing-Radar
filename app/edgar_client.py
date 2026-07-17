@@ -118,13 +118,30 @@ def fetch_full_index(year: int, quarter: int, client: httpx.Client) -> list[Inde
     return rows
 
 
+NON_ETF_REGISTRANT_KEYWORDS = (
+    "insurance",
+    "life insurance",
+    "variable account",
+    "variable annuity",
+    "separate account",
+    "annuity",
+)
+
+
+def _looks_like_etf_registrant(company_name: str) -> bool:
+    lower = company_name.lower()
+    return not any(kw in lower for kw in NON_ETF_REGISTRANT_KEYWORDS)
+
+
 def discover_filings(start: date, end: date, client: httpx.Client) -> list[IndexRow]:
     """Pull every ETF-relevant filing in [start, end] across the needed quarters."""
     all_rows: list[IndexRow] = []
     for year, quarter in _quarters_between(start, end):
         rows = fetch_full_index(year, quarter, client)
         for r in rows:
-            if start.isoformat() <= r.date_filed <= end.isoformat():
+            if start.isoformat() <= r.date_filed <= end.isoformat() and _looks_like_etf_registrant(
+                r.company_name
+            ):
                 all_rows.append(r)
     return all_rows
 
@@ -148,11 +165,22 @@ def find_primary_document_url(index_page_html: str, index_url: str) -> str | Non
     return f"{base}/{doc.lstrip('/')}"
 
 
+CHECKBOX_TAG_RE = re.compile(r'<input\b[^>]*type=["\']?checkbox["\']?[^>]*>', re.IGNORECASE)
+
+
 def fetch_document_text(doc_url: str, client: httpx.Client) -> str:
     _throttle()
     resp = client.get(doc_url, headers=BASE_HEADERS, timeout=30)
     resp.raise_for_status()
-    text = re.sub(r"<[^>]+>", " ", resp.text)
+    raw = resp.text
+
+    def _checkbox_to_bracket(m: "re.Match") -> str:
+        is_checked = bool(re.search(r"\bchecked\b", m.group(0), re.IGNORECASE))
+        return "[X]" if is_checked else "[ ]"
+
+    raw = CHECKBOX_TAG_RE.sub(_checkbox_to_bracket, raw)
+
+    text = re.sub(r"<[^>]+>", " ", raw)
     text = re.sub(r"&nbsp;|&#160;", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text
