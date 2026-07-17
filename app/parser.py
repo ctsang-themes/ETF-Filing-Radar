@@ -319,9 +319,11 @@ FUND_NAME_BOILERPLATE_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 FUND_NAME_KNOWN_HEADING_RE = re.compile(
-    r'^(?:FUND SUMMARY\.?|PROSPECTUS SUMMARY\.?|SUMMARY\.?|PROSPECTUS\.?)\s+',
+    r'^(?:ETF\s+)?(?:FUND SUMMARY\.?|PROSPECTUS SUMMARY\.?|SUMMARY\.?|PROSPECTUS\.?|'
+    r'INVESTMENT OBJECTIVE\.?|INVESTMENT OBJECTIVES\.?)\s+',
     re.IGNORECASE,
 )
+FUND_NAME_LEADING_THE_RE = re.compile(r'^The\s+(?=[A-Z])', re.IGNORECASE)
 
 
 def _strip_fund_name_headings(name: str) -> str:
@@ -353,6 +355,7 @@ def parse_fund_name(text: str) -> str | None:
     candidate = m.group(1).strip()
     candidate = _strip_fund_name_headings(candidate)
     candidate = _strip_fund_name_boilerplate(candidate)
+    candidate = FUND_NAME_LEADING_THE_RE.sub("", candidate)
     return candidate if len(candidate) >= 3 else None
 
 
