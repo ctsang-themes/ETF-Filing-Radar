@@ -38,9 +38,13 @@ ADVISER_NAME_BEFORE_RE = re.compile(
 
 ADVISER_REJECT_TERMS = {
     "the adviser", "adviser", "the fund", "the trust", "the board",
-    "sub-adviser", "the sub-adviser",
+    "sub-adviser", "the sub-adviser", "the firm", "firm",
 }
-ADVISER_REJECT_WORDS = {"act", "amended", "officers", "directors", "registered", "under"}
+ADVISER_REJECT_WORDS = {
+    "act", "amended", "officers", "directors", "registered", "under",
+    "for", "is", "are", "was", "the", "in", "on", "at", "to", "by", "of",
+    "whereas", "file", "no", "sec",
+}
 
 ADVISER_LABEL_RE = re.compile(
     r"(?:(?i:Investment Adviser[s]?))\s*[:\-]?\s*([A-Z][A-Za-z0-9&.,'\-\s]{2,80}?)"
@@ -250,6 +254,17 @@ def _strip_leading_heading_words(name: str) -> str:
     return " ".join(words)
 
 
+ADVISER_LABEL_PREFIX_RE = re.compile(r"^(?:investment\s+advisers?|advisers?)\s+", re.IGNORECASE)
+
+
+def _strip_leading_adviser_label(name: str) -> str:
+    while True:
+        stripped = ADVISER_LABEL_PREFIX_RE.sub("", name)
+        if stripped == name:
+            return name
+        name = stripped
+
+
 def _is_valid_adviser_candidate(name: str) -> bool:
     lower = name.lower()
     if lower in ADVISER_REJECT_TERMS:
@@ -270,12 +285,14 @@ def parse_adviser(text: str) -> str | None:
             continue
         candidate = _clean_adviser_name(m.group(1))
         candidate = _strip_leading_heading_words(candidate)
+        candidate = _strip_leading_adviser_label(candidate)
         if len(candidate) >= 3 and _is_valid_adviser_candidate(candidate):
             return candidate
 
     m = ADVISER_LABEL_RE.search(text)
     if m:
         candidate = _clean_adviser_name(m.group(1))
+        candidate = _strip_leading_adviser_label(candidate)
         if len(candidate) >= 3 and _is_valid_adviser_candidate(candidate):
             return candidate
 
@@ -283,8 +300,13 @@ def parse_adviser(text: str) -> str | None:
 
 
 def brand_from_fund_name(fund_name: str) -> str | None:
+    lower = fund_name.lower()
     for brand in KNOWN_ISSUER_BRANDS:
-        if fund_name.lower().startswith(brand.lower()):
+        b = brand.lower()
+        if not lower.startswith(b):
+            continue
+        boundary_char = fund_name[len(brand) : len(brand) + 1]
+        if boundary_char == "" or not boundary_char.isalnum():
             return normalize_brand(brand)
     words = fund_name.split()
     return words[0] if words else None
