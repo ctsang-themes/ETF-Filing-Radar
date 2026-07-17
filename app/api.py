@@ -1,9 +1,5 @@
 """
 FastAPI service: GET /scrape?start=YYYY-MM-DD&end=YYYY-MM-DD
-
-Pulls real ETF registration filings from EDGAR for the date range,
-resolves issuer vs. trust per filing, detects the Rule 485 effective-date
-basis, and returns JSON in the shape the tracker frontend expects.
 """
 
 from __future__ import annotations
@@ -40,7 +36,8 @@ def health():
 
 def _build_record(row: edgar_client.IndexRow, text: str | None) -> dict:
     adviser = parser.parse_adviser(text) if text else None
-    resolution = parser.resolve_issuer(row.company_name, adviser)
+    sponsor = parser.parse_fund_sponsor(text) if text else None
+    resolution = parser.resolve_issuer(row.company_name, adviser, sponsor)
     facing = parser.parse_facing_sheet_basis(text) if text else parser.FacingSheetResult(
         None, None, "needs_review"
     )
@@ -62,14 +59,25 @@ def _build_record(row: edgar_client.IndexRow, text: str | None) -> dict:
         filed_dt = datetime.strptime(filed, "%Y-%m-%d").date()
         effective_date = (filed_dt + timedelta(days=days)).isoformat()
 
-    resolved_via_parts = [
-        f"Adviser field {'found' if adviser else 'not found'} via {resolution.method}."
-    ]
-    if resolution.confidence == "low":
-        resolved_via_parts.append(
-            "Registrant is a known shared-trust platform; issuer left unresolved "
-            "rather than guessed."
-        )
+    if resolution.method == "fund_sponsor":
+        resolved_via_parts = [
+            f"Fund Sponsor section names '{sponsor}' as the brand sponsor "
+            f"(distinct from the Adviser of record"
+            f"{', ' + adviser if adviser else ''})."
+        ]
+    elif resolution.method == "adviser_field":
+        resolved_via_parts = [f"Adviser field found: '{adviser}'."]
+    elif resolution.method == "shared_trust_no_signal":
+        resolved_via_parts = [
+            "Neither a Fund Sponsor section nor an Adviser field could be found, "
+            "and the registrant is a known shared-trust platform; issuer left "
+            "unresolved rather than guessed."
+        ]
+    else:
+        resolved_via_parts = [
+            f"Neither Fund Sponsor nor Adviser field found; guessed '{resolution.issuer}' "
+            "from the registrant name -- treat as low-confidence."
+        ]
     resolved_via_parts.append(f"Facing sheet basis: {basis_confidence}.")
 
     return {
@@ -99,10 +107,6 @@ async def _scrape(start: date, end: date) -> list[dict]:
                 records = []
                 for row in rows:
                     try:
-                        # row.index_url points straight at the complete raw
-                        # submission (.txt) -- it's the whole filing already,
-                        # not a webpage with links to click through to find
-                        # "the real document." Read it directly.
                         text = edgar_client.fetch_document_text(row.index_url, client)
                     except Exception:
                         text = None
