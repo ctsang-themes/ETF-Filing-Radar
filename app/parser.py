@@ -3,12 +3,6 @@ Extraction logic for the two things that actually trip this project up:
 
 1. Which effective-date box is checked on the Rule 485 facing sheet.
 2. Who the real issuer is, as distinct from the registrant Trust name.
-
-Both are regex/heuristic based against the flattened document text from
-edgar_client.fetch_document_text(). Checkbox rendering on EDGAR is
-inconsistent across filers and years (Unicode ballot boxes, bracketed
-X's, Wingdings-mapped glyphs), so this is deliberately conservative:
-when it can't tell, it returns None / "needs_review" rather than guess.
 """
 
 from __future__ import annotations
@@ -16,10 +10,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-CHECKED_MARKERS = ("\u2612", "[X]", "[x]", "(X)")  # ballot-box-with-x, bracket forms
+CHECKED_MARKERS = ("\u2612", "[X]", "[x]", "(X)")
 
-# The six facing-sheet options, in the order Rule 485 lists them, each
-# with the basis code we report downstream.
 FACING_SHEET_OPTIONS = [
     ("immediately upon filing pursuant to paragraph (b)", "485b-immediate"),
     ("on (date) pursuant to paragraph (b)", "485b-date"),
@@ -35,53 +27,26 @@ EXPLICIT_DATE_RE = re.compile(
     r"([A-Z][a-z]+\s+\d{1,2},\s+\d{4})"
 )
 
-# Real prospectus text states the adviser name BEFORE the phrase
-# ("Tidal Investments LLC serves as investment adviser to the Fund"),
-# not as a "Label: Value" field the way a form would. Confirmed against
-# live EDGAR filings rather than assumed.
 ADVISER_ANCHOR_RE = re.compile(
     r"(?:(?:has\s+)?serv(?:e|es|ed|ing)\s+as|acts?\s+as|is|are|was)\s+"
     r"(?:the\s+)?(?:Fund'?s\s+)?investment adviser",
     re.IGNORECASE,
 )
-# Bounded to at most 5 words total -- real adviser names are essentially
-# never longer than this, and bounding it stops the capture from
-# swallowing an unrelated section heading that abuts the sentence once
-# the document is flattened to a single line.
 ADVISER_NAME_BEFORE_RE = re.compile(
     r"([A-Z][A-Za-z0-9&.,'\-]*(?:\s+[A-Z(][A-Za-z0-9&.,'\")\-]*){0,4})\s*$"
 )
 
-# A document often defines "ABC LLC (the 'Adviser')" once, then refers to
-# it as just "The Adviser" everywhere after -- if the FIRST occurrence of
-# the anchor phrase happens to be one of those backreferences rather than
-# the original naming sentence, these catch it so we can move on to the
-# next occurrence instead of returning the placeholder as if it were a
-# real name.
 ADVISER_REJECT_TERMS = {
     "the adviser", "adviser", "the fund", "the trust", "the board",
     "sub-adviser", "the sub-adviser",
 }
 ADVISER_REJECT_WORDS = {"act", "amended", "officers", "directors", "registered", "under"}
 
-# Fallback for the rarer "Investment Adviser: Name" labeled-field style.
-# Only the label itself is case-insensitive -- the captured name must
-# start with a real capital letter, or lowercase boilerplate prose gets
-# mistaken for a company name.
 ADVISER_LABEL_RE = re.compile(
     r"(?:(?i:Investment Adviser[s]?))\s*[:\-]?\s*([A-Z][A-Za-z0-9&.,'\-\s]{2,80}?)"
     r"(?=\s*(?:Sub-[Aa]dviser|Distributor|Administrator|Custodian|\.|,\s*(?:LLC|LP|Inc)\b[.,]|$))"
 )
 
-# On white-label platforms (Tidal Trust II, etc.), the "Adviser" of record
-# is often just a technical/compliance entity (e.g. "Tidal Investments
-# LLC") shared across many unrelated brands -- the actual brand name is
-# disclosed separately under a "FUND SPONSOR" heading. Self-advised funds
-# (GraniteShares, Direxion, etc.) have no such section at all, since
-# there's no separate sponsor to disclose -- so trying this first is
-# harmless for them; it simply won't match and falls through to the
-# adviser field below. Confirmed against a live filing with this exact
-# structure.
 SPONSOR_SECTION_RE = re.compile(r"FUND SPONSOR", re.IGNORECASE)
 SPONSOR_NAME_RE = re.compile(
     r"sponsorship agreement with\s+[A-Z][A-Za-z0-9&.,'\-\s]*?"
@@ -89,9 +54,6 @@ SPONSOR_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Known shared, multi-brand trust platforms. When the adviser field can't
-# be found, registrant name alone is NOT trustworthy for these -- fall
-# back to "needs_review" rather than guessing a brand.
 SHARED_TRUST_PLATFORMS = {
     "tidal trust ii",
     "tidal etf trust",
@@ -102,11 +64,6 @@ SHARED_TRUST_PLATFORMS = {
     "exchange traded concepts trust",
 }
 
-# Entities that exist purely to provide back-office/compliance services on
-# white-label trust platforms -- they never have their own branded, end-
-# customer-facing products. Finding one of these as "the adviser" is a
-# signal that the real brand lives elsewhere (Fund Sponsor section, or
-# the fund's own name), not that we've found the issuer.
 KNOWN_SHELL_ADVISERS = {
     "tidal investments llc",
     "toroso investments",
@@ -116,11 +73,6 @@ KNOWN_SHELL_ADVISERS = {
     "zega financial",
 }
 
-# Known issuer brands, sourced from the ETF.com league table. Sorted
-# longest-first so multi-word brands ("Leverage Shares") are checked
-# before a shorter overlapping guess would otherwise fire on an
-# unrelated generic suffix word ("Shares") elsewhere. Inherently
-# incomplete -- extend as new issuers or product lines come up.
 KNOWN_ISSUER_BRANDS = sorted(
     [
     "Rockefeller Capital Management", "Summit Global Investments",
@@ -214,10 +166,6 @@ KNOWN_ISSUER_BRANDS = sorted(
     reverse=True,
 )
 
-# Some firms operate under multiple names in filings/marketing that are
-# really the same economic issuer -- normalize these to one canonical
-# name so they group together instead of splintering into look-alike
-# rows. Extend this as more such relationships come up.
 BRAND_ALIASES = {
     "ft vest": "First Trust",
     "rex shares": "REX Shares",
@@ -245,23 +193,19 @@ def normalize_brand(name: str) -> str:
 class FacingSheetResult:
     basis_type: str | None
     designated_date: str | None
-    confidence: str  # "checkbox_detected" | "needs_review"
+    confidence: str
 
 
 @dataclass
 class IssuerResolution:
     issuer: str | None
     trust: str
-    confidence: str  # "high" | "alias" | "low"
+    confidence: str
     method: str
 
 
 def parse_facing_sheet_basis(text: str) -> FacingSheetResult:
-    """Find which of the six Rule 485 checkboxes is marked."""
     window = text
-    # Narrow to the facing sheet region if we can find the anchor phrase --
-    # keeps false positives from prospectus body text mentioning "485(a)"
-    # elsewhere.
     anchor = window.find("proposed public filing")
     if anchor != -1:
         window = window[anchor : anchor + 2000]
@@ -299,10 +243,6 @@ def parse_fund_sponsor(text: str) -> str | None:
 
 def _strip_leading_heading_words(name: str) -> str:
     words = name.split()
-    # A legitimate all-caps abbreviation name (e.g. "SSGA FM") has every
-    # word uppercase -- only strip leading uppercase words when there are
-    # also mixed-case words later, which signals a swallowed heading
-    # rather than a real all-caps name.
     if all(w.strip(",.").isupper() for w in words):
         return name
     while words and words[0].strip(",.").isupper() and len(words) > 1:
@@ -333,25 +273,16 @@ def parse_adviser(text: str) -> str | None:
         if len(candidate) >= 3 and _is_valid_adviser_candidate(candidate):
             return candidate
 
-    # Fall back to the less common "Investment Adviser: Name" style.
     m = ADVISER_LABEL_RE.search(text)
     if m:
         candidate = _clean_adviser_name(m.group(1))
-        if len(candidate) >= 3:
+        if len(candidate) >= 3 and _is_valid_adviser_candidate(candidate):
             return candidate
 
     return None
 
 
 def brand_from_fund_name(fund_name: str) -> str | None:
-    """Fund names almost always lead with the brand ('YieldMax NVDA...',
-    'Defiance Daily Target...'), but some real brands are themselves
-    two words where the second word ('Shares') is also a common generic
-    suffix elsewhere ('Direxion Daily PLTR Bull 2X Shares') -- a naive
-    first-word split can't tell these apart. Check known multi-word
-    brands as a prefix match first (longest first), and only fall back
-    to the crude first-word guess for brands not yet in the list. This
-    list is inherently incomplete -- extend it as new issuers come up."""
     for brand in KNOWN_ISSUER_BRANDS:
         if fund_name.lower().startswith(brand.lower()):
             return normalize_brand(brand)
@@ -365,15 +296,6 @@ def resolve_issuer(
     sponsor: str | None = None,
     fund_name: str | None = None,
 ) -> IssuerResolution:
-    """Never treat registrant/Trust name as issuer by default. Priority:
-    1. Fund Sponsor -- the real brand on white-label platforms, where the
-       Adviser of record is often just a shared technical entity.
-    2. Adviser field -- but ONLY if it isn't a known shell/back-office
-       entity, since those never have their own branded products.
-    3. Fund-name brand heuristic -- a guess, not a document fact, so
-       lower confidence than the two above.
-    4. Flagged fallback for known shared-trust platforms with nothing.
-    """
     trust = registrant_name
 
     if sponsor:
@@ -396,16 +318,10 @@ def resolve_issuer(
             )
 
     if trust.strip().lower() in SHARED_TRUST_PLATFORMS:
-        # Can't safely guess a brand for a shared platform with nothing
-        # to go on -- this is exactly the Defiance/Tidal mistake to avoid
-        # repeating.
         return IssuerResolution(
             issuer=None, trust=trust, confidence="low", method="shared_trust_no_signal"
         )
 
-    # Self-filed-looking trust name with neither signal found -- fall
-    # back to the registrant name as a low-confidence guess, clearly
-    # flagged, not asserted.
     guessed = trust.replace(" ETF Trust", "").replace(" Trust", "").strip()
     return IssuerResolution(
         issuer=guessed, trust=trust, confidence="alias", method="registrant_name_fallback"
