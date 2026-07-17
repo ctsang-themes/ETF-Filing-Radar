@@ -281,6 +281,8 @@ def _is_valid_adviser_candidate(name: str) -> bool:
     words = set(re.findall(r"[a-z]+", lower))
     if words & ADVISER_REJECT_WORDS:
         return False
+    if any(w.strip(",.").isdigit() for w in name.split()):
+        return False
     return True
 
 
