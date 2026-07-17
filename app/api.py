@@ -1,5 +1,9 @@
 """
 FastAPI service: GET /scrape?start=YYYY-MM-DD&end=YYYY-MM-DD
+
+Pulls real ETF registration filings from EDGAR for the date range,
+resolves issuer vs. trust per filing, detects the Rule 485 effective-date
+basis, and returns JSON in the shape the tracker frontend expects.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ def health():
 def _build_record(row: edgar_client.IndexRow, text: str | None) -> dict:
     adviser = parser.parse_adviser(text) if text else None
     sponsor = parser.parse_fund_sponsor(text) if text else None
-    resolution = parser.resolve_issuer(row.company_name, adviser, sponsor)
+    resolution = parser.resolve_issuer(row.company_name, adviser, sponsor, row.company_name)
     facing = parser.parse_facing_sheet_basis(text) if text else parser.FacingSheetResult(
         None, None, "needs_review"
     )
@@ -67,6 +71,12 @@ def _build_record(row: edgar_client.IndexRow, text: str | None) -> dict:
         ]
     elif resolution.method == "adviser_field":
         resolved_via_parts = [f"Adviser field found: '{adviser}'."]
+    elif resolution.method == "fund_name_heuristic":
+        resolved_via_parts = [
+            f"Neither Fund Sponsor nor a usable Adviser field found (adviser of record "
+            f"was a known shell/back-office entity); guessed '{resolution.issuer}' from "
+            f"the fund's own name -- treat as lower-confidence, not a document fact."
+        ]
     elif resolution.method == "shared_trust_no_signal":
         resolved_via_parts = [
             "Neither a Fund Sponsor section nor an Adviser field could be found, "
