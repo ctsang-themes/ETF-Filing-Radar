@@ -237,6 +237,47 @@ def parse_facing_sheet_basis(text: str) -> FacingSheetResult:
     return FacingSheetResult(None, None, "needs_review")
 
 
+# 485BXT filings (and some 485BPOS) state an effective date in prose rather
+# than via a facing-sheet checkbox, e.g.:
+#   "This Post-Effective Amendment shall become effective on September 29, 2026
+#    pursuant to Rule 485(b)(1)(iii)."
+#   "...designates October 1, 2026 as the new effective date..."
+# Detect the date directly, independent of the (fragile) checkbox parse.
+DESIGNATED_EFFECTIVE_RES = [
+    re.compile(
+        r"(?:shall\s+|will\s+|to\s+)?(?:become|be)\s+effective\s+on\s+"
+        r"(?:or\s+about\s+)?([A-Z][a-z]+\s+\d{1,2},\s+\d{4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:designates?|designating)\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})\s+"
+        r"as\s+(?:the\s+)?(?:new\s+)?effective\s+date",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:new\s+)?effective\s+date\s+(?:of|to\s+be|shall\s+be|will\s+be|is)\s+"
+        r"([A-Z][a-z]+\s+\d{1,2},\s+\d{4})",
+        re.IGNORECASE,
+    ),
+]
+
+
+def parse_designated_effective_date(text: str) -> str | None:
+    """Extract a prose-stated effective date (returns ISO YYYY-MM-DD or None)."""
+    from datetime import datetime as _dt
+
+    for rx in DESIGNATED_EFFECTIVE_RES:
+        m = rx.search(text)
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        try:
+            return _dt.strptime(raw, "%B %d, %Y").date().isoformat()
+        except ValueError:
+            return raw
+    return None
+
+
 def _clean_adviser_name(name: str) -> str:
     return name.strip(" \"'()").rstrip(",")
 

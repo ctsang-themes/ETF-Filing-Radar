@@ -26,6 +26,15 @@ app.add_middleware(
 
 CACHE_TTL = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
 MAX_DOCS_PER_REQUEST = int(os.environ.get("MAX_DOCS_PER_REQUEST", "60"))
+
+# The EDGAR form type tells us what kind of event a filing is, so a date
+# extension (485BXT) doesn't masquerade as a brand-new launch.
+_STATUS_BY_FORM = {
+    "N-1A": "Initial registration",
+    "485APOS": "Newly filed",
+    "485BPOS": "Effective",
+    "485BXT": "Effective date set",
+}
 _cache: dict[str, tuple[float, list[dict]]] = {}
 
 
@@ -99,6 +108,29 @@ def _build_record(
         days = parser.DAYS_BY_BASIS.get(basis_type)
         basis = {"type": basis_type, "days": days}
 
+    # Fall back to the form type -- which comes reliably from the index, no
+    # parsing -- when the facing-sheet checkbox couldn't be read. The form type
+    # itself is a strong effective-date signal:
+    #   485BPOS  : post-effective amendment, effective on filing (immediate)
+    #   485BXT   : designates/extends an effective date stated in prose
+    if basis_type is None:
+        form = row.form_type.upper()
+        if form == "485BPOS":
+            basis_type = "485b-immediate"
+            effective_date = filed
+            basis = {"type": basis_type}
+            basis_confidence = "form_type_default"
+        elif form == "485BXT":
+            iso = parser.parse_designated_effective_date(text) if text else None
+            if iso:
+                basis_type = "485b-date"
+                basis = {"type": basis_type, "designatedDate": iso}
+                designated_date = iso
+                basis_confidence = "form_type_default"
+            else:
+                # Known to be a date designation, but the date couldn't be read.
+                basis = {"type": "unresolved", "days": None}
+
     if resolution.method == "fund_sponsor":
         resolved_via_parts = [
             f"Fund Sponsor section names '{sponsor}' as the brand sponsor "
@@ -144,7 +176,7 @@ def _build_record(
 
     return {
         "filed": filed,
-        "status": "Newly filed",
+        "status": _STATUS_BY_FORM.get(row.form_type.upper(), "Newly filed"),
         "fund": display_fund_name,
         "ticker": ticker,
         "seriesId": series.series_id if series is not None else None,
